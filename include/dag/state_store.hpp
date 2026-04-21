@@ -17,6 +17,7 @@ public:
     StateStore() = default;
     explicit StateStore(std::string event_log_path);
 
+    void set_event_context(std::string run_id, std::string workflow_name);
     void initialize(const WorkflowSpec& spec);
     void mark_ready(const std::string& task_id);
     void mark_running(const std::string& task_id, int attempt);
@@ -50,6 +51,8 @@ private:
     int retries_{0};
 
     std::optional<std::ofstream> event_log_;
+    std::string event_run_id_;
+    std::string event_workflow_name_;
 };
 
 }  // namespace dag

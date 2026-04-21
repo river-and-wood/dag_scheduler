@@ -3,6 +3,7 @@
 #include <fstream>
 #include <optional>
 #include <stdexcept>
+#include <vector>
 
 namespace dag {
 namespace {
@@ -54,42 +55,99 @@ std::optional<TaskStatus> parse_terminal_details(const std::string& details) {
     return std::nullopt;
 }
 
+struct ParsedEvent {
+    std::string task_id;
+    std::string event;
+    std::string details;
+    std::string run_id;
+    std::string workflow;
+};
+
+bool matches_filter(const ParsedEvent& entry,
+                    const ReplayFilter& filter,
+                    const std::string& effective_run_id) {
+    if (!filter.workflow.empty()) {
+        if (entry.workflow.empty() || entry.workflow != filter.workflow) {
+            return false;
+        }
+    }
+
+    if (!effective_run_id.empty()) {
+        if (entry.run_id.empty() || entry.run_id != effective_run_id) {
+            return false;
+        }
+    } else if (!filter.run_id.empty()) {
+        return false;
+    }
+
+    return true;
+}
+
+void apply_event(std::unordered_map<std::string, TaskStatus>& states, const ParsedEvent& entry) {
+    if (entry.event == "init") {
+        states[entry.task_id] = TaskStatus::Pending;
+    } else if (entry.event == "ready") {
+        states[entry.task_id] = TaskStatus::Ready;
+    } else if (entry.event == "running") {
+        states[entry.task_id] = TaskStatus::Running;
+    } else if (entry.event == "retrying") {
+        states[entry.task_id] = TaskStatus::Retrying;
+    } else if (entry.event == "skipped") {
+        states[entry.task_id] = TaskStatus::Skipped;
+    } else if (entry.event == "terminal") {
+        const auto status = parse_terminal_details(entry.details);
+        if (status.has_value()) {
+            states[entry.task_id] = *status;
+        }
+    }
+}
+
 }  // namespace
 
 std::unordered_map<std::string, TaskStatus> EventReplayer::replay_file(const std::string& event_log_path) const {
+    return replay_file(event_log_path, ReplayFilter{});
+}
+
+std::unordered_map<std::string, TaskStatus> EventReplayer::replay_file(
+    const std::string& event_log_path, const ReplayFilter& filter) const {
     std::ifstream in(event_log_path);
     if (!in) {
         throw std::runtime_error("cannot open event log file: " + event_log_path);
     }
 
-    std::unordered_map<std::string, TaskStatus> states;
+    std::vector<ParsedEvent> entries;
+    std::string latest_run_id_for_workflow;
 
     std::string line;
     while (std::getline(in, line)) {
-        const std::string task_id = extract_json_string(line, "task_id");
-        const std::string event = extract_json_string(line, "event");
-        const std::string details = extract_json_string(line, "details");
+        ParsedEvent entry;
+        entry.task_id = extract_json_string(line, "task_id");
+        entry.event = extract_json_string(line, "event");
+        entry.details = extract_json_string(line, "details");
+        entry.run_id = extract_json_string(line, "run_id");
+        entry.workflow = extract_json_string(line, "workflow");
 
-        if (task_id.empty() || event.empty()) {
+        if (entry.task_id.empty() || entry.event.empty()) {
             continue;
         }
+        entries.push_back(entry);
 
-        if (event == "init") {
-            states[task_id] = TaskStatus::Pending;
-        } else if (event == "ready") {
-            states[task_id] = TaskStatus::Ready;
-        } else if (event == "running") {
-            states[task_id] = TaskStatus::Running;
-        } else if (event == "retrying") {
-            states[task_id] = TaskStatus::Retrying;
-        } else if (event == "skipped") {
-            states[task_id] = TaskStatus::Skipped;
-        } else if (event == "terminal") {
-            const auto status = parse_terminal_details(details);
-            if (status.has_value()) {
-                states[task_id] = *status;
-            }
+        if (!filter.workflow.empty() && entry.workflow == filter.workflow && !entry.run_id.empty()) {
+            latest_run_id_for_workflow = entry.run_id;
         }
+    }
+
+    std::string effective_run_id = filter.run_id;
+    if (effective_run_id.empty() && !filter.workflow.empty()) {
+        effective_run_id = latest_run_id_for_workflow;
+    }
+
+    std::unordered_map<std::string, TaskStatus> states;
+    for (const auto& entry : entries) {
+        if (!matches_filter(entry, filter, effective_run_id)) {
+            continue;
+        }
+        apply_event(states, entry);
     }
 
     return states;

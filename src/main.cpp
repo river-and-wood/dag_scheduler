@@ -27,6 +27,7 @@ struct CliOptions {
     std::string events_path{"events.jsonl"};
     std::optional<std::string> log_path{std::string{"run.log"}};
     std::string run_id;
+    bool run_id_explicit{false};
     bool resume{false};
     int max_cpu_running{0};
     int max_io_running{0};
@@ -85,6 +86,7 @@ CliOptions parse_args(int argc, char** argv) {
             }
         } else if (arg == "--run-id") {
             opts.run_id = need_value(arg);
+            opts.run_id_explicit = true;
         } else if (arg == "--resume") {
             opts.resume = true;
         } else if (arg == "--max-cpu") {
@@ -128,13 +130,19 @@ int run_scheduler(const CliOptions& opts) {
 
     dag::ThreadPoolExecutor executor(opts.workers);
     dag::StateStore state_store(opts.events_path);
+    state_store.set_event_context(opts.run_id, spec.name);
     dag::Observer observer(opts.run_id, opts.log_path);
     observer.info("starting workflow: " + spec.name);
 
     std::unordered_map<std::string, dag::TaskStatus> resume_states;
     if (opts.resume) {
         dag::EventReplayer replayer;
-        resume_states = replayer.replay_file(opts.events_path);
+        dag::ReplayFilter filter;
+        filter.workflow = spec.name;
+        if (opts.run_id_explicit) {
+            filter.run_id = opts.run_id;
+        }
+        resume_states = replayer.replay_file(opts.events_path, filter);
         observer.info("resume mode enabled");
     }
 

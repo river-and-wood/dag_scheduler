@@ -7,6 +7,11 @@
 
 namespace dag {
 
+struct ReplayFilter {
+    std::string workflow;
+    std::string run_id;
+};
+
 struct ReplaySummary {
     int total{0};
     int succeeded{0};
@@ -19,6 +24,8 @@ struct ReplaySummary {
 class EventReplayer {
 public:
     std::unordered_map<std::string, TaskStatus> replay_file(const std::string& event_log_path) const;
+    std::unordered_map<std::string, TaskStatus> replay_file(
+        const std::string& event_log_path, const ReplayFilter& filter) const;
     ReplaySummary summarize(const std::unordered_map<std::string, TaskStatus>& states) const;
 };
 

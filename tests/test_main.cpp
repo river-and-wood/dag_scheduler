@@ -356,6 +356,51 @@ void test_event_replay_tolerates_malformed_lines() {
     ASSERT_EQ(summary.skipped, 0);
 }
 
+void test_event_replay_uses_latest_run_per_workflow() {
+    TempDir t;
+    const fs::path events = t.path / "mixed_runs_events.jsonl";
+    write_file(events,
+               "{\"ts\":\"2026-01-01T00:00:00Z\",\"run_id\":\"run-1\",\"workflow\":\"wf-a\",\"task_id\":\"A\",\"event\":\"terminal\",\"details\":\"Succeeded, exit_code=0\"}\n"
+               "{\"ts\":\"2026-01-01T00:00:01Z\",\"run_id\":\"run-2\",\"workflow\":\"wf-b\",\"task_id\":\"A\",\"event\":\"terminal\",\"details\":\"Failed, exit_code=1\"}\n"
+               "{\"ts\":\"2026-01-01T00:00:02Z\",\"run_id\":\"run-3\",\"workflow\":\"wf-a\",\"task_id\":\"A\",\"event\":\"terminal\",\"details\":\"Failed, exit_code=1\"}\n"
+               "{\"ts\":\"2026-01-01T00:00:03Z\",\"run_id\":\"run-3\",\"workflow\":\"wf-a\",\"task_id\":\"B\",\"event\":\"terminal\",\"details\":\"Succeeded, exit_code=0\"}\n");
+
+    dag::EventReplayer replayer;
+    dag::ReplayFilter filter;
+    filter.workflow = "wf-a";
+    const auto states = replayer.replay_file(events.string(), filter);
+    const auto summary = replayer.summarize(states);
+
+    ASSERT_EQ(summary.total, 2);
+    ASSERT_EQ(summary.succeeded, 1);
+    ASSERT_EQ(summary.failed, 1);
+    ASSERT_EQ(summary.timed_out, 0);
+    ASSERT_EQ(summary.skipped, 0);
+}
+
+void test_resume_does_not_cross_workflow_from_events() {
+    TempDir t;
+    const fs::path events = t.path / "resume_mixed.workflow.events";
+    const fs::path workflow = t.path / "resume_target.workflow";
+
+    write_file(events,
+               "{\"ts\":\"2026-01-01T00:00:00Z\",\"run_id\":\"run-old\",\"workflow\":\"old-workflow\",\"task_id\":\"A\",\"event\":\"terminal\",\"details\":\"Succeeded, exit_code=0\"}\n");
+    write_file(workflow,
+               "workflow new-workflow\n"
+               "task A\n"
+               "  cmd: exit 7\n"
+               "end\n");
+
+    dag::EventReplayer replayer;
+    dag::ReplayFilter filter;
+    filter.workflow = "new-workflow";
+    const auto resume_states = replayer.replay_file(events.string(), filter);
+
+    dag::RunResult result = run_workflow(workflow, 1, {}, resume_states);
+    ASSERT_TRUE(!result.success);
+    ASSERT_EQ(result.failed, 1);
+}
+
 void test_parser_rejects_unknown_task_key() {
     TempDir t;
     const fs::path workflow = t.path / "unknown_key.workflow";
@@ -484,6 +529,8 @@ int main() {
         {"timeout", test_timeout},
         {"event_replay_summary", test_event_replay_summary},
         {"event_replay_tolerates_malformed_lines", test_event_replay_tolerates_malformed_lines},
+        {"event_replay_uses_latest_run_per_workflow", test_event_replay_uses_latest_run_per_workflow},
+        {"resume_does_not_cross_workflow_from_events", test_resume_does_not_cross_workflow_from_events},
         {"parser_rejects_unknown_task_key", test_parser_rejects_unknown_task_key},
         {"resume_skips_already_succeeded_task", test_resume_skips_already_succeeded_task},
         {"resource_cpu_limit_serializes_cpu_tasks", test_resource_cpu_limit_serializes_cpu_tasks},
