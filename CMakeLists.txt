@@ -14,9 +14,9 @@ endif()
 
 set(SAN_FLAGS "")
 if(ENABLE_ASAN)
-  set(SAN_FLAGS "-fsanitize=address -fno-omit-frame-pointer")
+  set(SAN_FLAGS -fsanitize=address -fno-omit-frame-pointer)
 elseif(ENABLE_TSAN)
-  set(SAN_FLAGS "-fsanitize=thread -fno-omit-frame-pointer")
+  set(SAN_FLAGS -fsanitize=thread -fno-omit-frame-pointer)
 endif()
 
 add_library(dag_core

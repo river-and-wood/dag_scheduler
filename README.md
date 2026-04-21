@@ -16,6 +16,13 @@
 - `tests/`：端到端与核心逻辑测试
 - `examples/`：示例 workflow
 - `packaging/dag-scheduler.service`：systemd 服务示例
+- `docs/ROADMAP.md`：项目里程碑与完成标准
+- `docs/EXECUTION_PLAN.md`：逐步执行计划与验收项
+
+## 项目推进文档
+
+- 路线图：`docs/ROADMAP.md`
+- 执行计划：`docs/EXECUTION_PLAN.md`
 
 ## 工作流格式
 
