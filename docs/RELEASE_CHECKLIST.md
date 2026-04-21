@@ -15,7 +15,7 @@
 
 ## Versioning and Tagging Gate
 - [x] Version bumped (`CMakeLists.txt` / release notes)
-- [ ] Annotated tag created (example: `v1.0.0`)
+- [x] Annotated tag created (example: `v1.0.0`) - local tag `v0.2.0`
 - [x] Release notes include key changes and known limitations
 
 ## Post-release Gate
