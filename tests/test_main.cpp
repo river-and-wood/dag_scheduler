@@ -134,6 +134,54 @@ void test_cycle_detection() {
     ASSERT_TRUE(threw);
 }
 
+void test_duplicate_task_id_rejected() {
+    TempDir t;
+    const fs::path workflow = t.path / "dup.workflow";
+    write_file(workflow,
+               "workflow dup\n"
+               "task A\n"
+               "  cmd: true\n"
+               "end\n"
+               "task A\n"
+               "  cmd: true\n"
+               "end\n");
+
+    dag::WorkflowParser parser;
+    dag::WorkflowSpec spec = parser.parse_file(workflow.string());
+
+    dag::DagBuilder builder;
+    bool threw = false;
+    try {
+        (void)builder.build(spec);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    ASSERT_TRUE(threw);
+}
+
+void test_missing_dependency_rejected() {
+    TempDir t;
+    const fs::path workflow = t.path / "missing_dep.workflow";
+    write_file(workflow,
+               "workflow missing_dep\n"
+               "task A\n"
+               "  deps: B\n"
+               "  cmd: true\n"
+               "end\n");
+
+    dag::WorkflowParser parser;
+    dag::WorkflowSpec spec = parser.parse_file(workflow.string());
+
+    dag::DagBuilder builder;
+    bool threw = false;
+    try {
+        (void)builder.build(spec);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    ASSERT_TRUE(threw);
+}
+
 void test_run_success_and_dependency_order() {
     TempDir t;
     const fs::path output = t.path / "run.txt";
@@ -211,6 +259,32 @@ void test_failure_propagation_to_skip() {
     ASSERT_TRUE(!fs::exists(output));
 }
 
+void test_fail_fast_skips_remaining_ready_tasks() {
+    TempDir t;
+    const fs::path output = t.path / "should_not_exist.txt";
+    const fs::path workflow = t.path / "fail_fast.workflow";
+
+    write_file(workflow,
+               "workflow fail_fast\n"
+               "fail_fast true\n"
+               "task A\n"
+               "  cmd: exit 1\n"
+               "end\n"
+               "task B\n"
+               "  cmd: echo B >> " + output.string() + "\n"
+               "end\n"
+               "task C\n"
+               "  deps: A\n"
+               "  cmd: echo C >> " + output.string() + "\n"
+               "end\n");
+
+    dag::RunResult result = run_workflow(workflow, 1);
+    ASSERT_TRUE(!result.success);
+    ASSERT_EQ(result.failed, 1);
+    ASSERT_EQ(result.skipped, 2);
+    ASSERT_TRUE(!fs::exists(output));
+}
+
 void test_timeout() {
     TempDir t;
     const fs::path workflow = t.path / "timeout.workflow";
@@ -248,17 +322,41 @@ void test_event_replay_summary() {
     ASSERT_EQ(summary.skipped, 1);
 }
 
+void test_parser_rejects_unknown_task_key() {
+    TempDir t;
+    const fs::path workflow = t.path / "unknown_key.workflow";
+    write_file(workflow,
+               "workflow bad_key\n"
+               "task A\n"
+               "  unknown_key: 1\n"
+               "  cmd: true\n"
+               "end\n");
+
+    dag::WorkflowParser parser;
+    bool threw = false;
+    try {
+        (void)parser.parse_file(workflow.string());
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    ASSERT_TRUE(threw);
+}
+
 }  // namespace
 
 int main() {
     const std::vector<std::pair<std::string, std::function<void()>>> tests = {
         {"parse_and_validate_success", test_parse_and_validate_success},
         {"cycle_detection", test_cycle_detection},
+        {"duplicate_task_id_rejected", test_duplicate_task_id_rejected},
+        {"missing_dependency_rejected", test_missing_dependency_rejected},
         {"run_success_and_dependency_order", test_run_success_and_dependency_order},
         {"retry_then_success", test_retry_then_success},
         {"failure_propagation_to_skip", test_failure_propagation_to_skip},
+        {"fail_fast_skips_remaining_ready_tasks", test_fail_fast_skips_remaining_ready_tasks},
         {"timeout", test_timeout},
         {"event_replay_summary", test_event_replay_summary},
+        {"parser_rejects_unknown_task_key", test_parser_rejects_unknown_task_key},
     };
 
     int passed = 0;

@@ -8,7 +8,7 @@
 ## Current Status
 - M1 Planning Freeze: `done` (2026-04-21)
 - M2 CI Setup: `done` (2026-04-21)
-- M3 Coverage Gap Fill: `todo`
+- M3 Coverage Gap Fill: `done` (2026-04-21)
 - M4 Replay + Resume: `todo`
 - M5 Observability + Scheduling: `todo`
 - M6 Packaging + Release: `todo`
