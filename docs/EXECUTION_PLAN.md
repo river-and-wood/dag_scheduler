@@ -1,11 +1,12 @@
-# Execution Plan (Step-by-Step)
+# 执行计划（分步） / Execution Plan (Step-by-Step)
 
-## Current Baseline
+## 当前基线 / Current Baseline
 - Build: `cmake --preset debug && cmake --build --preset debug`
 - Test: `ctest --test-dir build/debug --output-on-failure`
-- Current baseline status: passing (captured on 2026-04-21)
+- 当前基线状态：通过（2026-04-21）  
+  Current baseline status: passing (2026-04-21)
 
-## Current Status
+## 当前状态 / Current Status
 - M1 Planning Freeze: `done` (2026-04-21)
 - M2 CI Setup: `done` (2026-04-21)
 - M3 Coverage Gap Fill: `done` (2026-04-21)
@@ -13,79 +14,78 @@
 - M5 Observability + Scheduling: `done` (2026-04-21)
 - M6 Packaging + Release: `done` (2026-04-21)
 
-## Step 1: Planning Freeze (M1)
+## Step 1: 规划冻结（M1） / Planning Freeze (M1)
 - Tasks:
-  - create roadmap and milestone acceptance criteria
-  - define implementation sequence for next steps
+- 制定路线图与里程碑验收标准 / create roadmap and milestone acceptance criteria
+- 定义后续实现顺序 / define implementation sequence
 - Output:
-  - `docs/ROADMAP.md`
-  - this file
+- `docs/ROADMAP.md`
+- 本文件 / this file
 - Verification:
-  - team can trace each milestone to concrete deliverables
+- 团队可将每个里程碑映射到可交付物 / team can trace each milestone to concrete deliverables
 
-## Step 2: CI Setup (M2)
+## Step 2: CI 建设（M2） / CI Setup (M2)
 - Tasks:
-  - add workflow for Linux Debug build + CTest
-  - add ASAN/TSAN jobs
+- 添加 Linux Debug + CTest workflow / add workflow for Linux Debug build + CTest
+- 添加 ASAN/TSAN 任务 / add ASAN/TSAN jobs
 - Output:
-  - `.github/workflows/ci.yml`
+- `.github/workflows/ci.yml`
 - Verification:
-  - workflow succeeds on a clean run
+- 在干净环境可通过 / workflow succeeds on a clean run
 
-## Step 3: Coverage Gap Fill (M3)
+## Step 3: 覆盖率缺口补齐（M3） / Coverage Gap Fill (M3)
 - Tasks:
-  - add parser negative tests (duplicate IDs, missing deps, bad keys)
-  - add scheduler fail_fast and retry/timeout corner tests
+- 增加 parser 负例测试（重复 ID、缺失依赖、非法 key） / add parser negative tests
+- 增加 scheduler fail_fast 与 retry/timeout 边界测试 / add fail_fast and retry/timeout corner tests
 - Output:
-  - updates in `tests/test_main.cpp` (or split test files)
+- 更新 `tests/test_main.cpp`
 - Verification:
-  - all new tests fail before fix and pass after fix
+- 新增测试在修复前失败、修复后通过 / new tests fail before fix and pass after fix
 
-## Step 4: Replay + Resume (M4)
+## Step 4: 回放与恢复（M4） / Replay + Resume (M4)
 - Tasks:
-  - harden replay parser for malformed lines
-  - implement `--resume` mode in CLI + scheduler bootstrap
+- 强化 replay 对坏行容错 / harden replay parser for malformed lines
+- 实现 `--resume` 与启动恢复逻辑 / implement `--resume` bootstrap
 - Output:
-  - updates in `src/replay.cpp`, `src/main.cpp`, `src/scheduler.cpp`, related headers/tests
+- 更新 `src/replay.cpp`、`src/main.cpp`、`src/scheduler.cpp` 等
 - Verification:
-  - replay survives partial corruption
-  - resumed run skips already succeeded tasks
+- 回放可忽略坏行 / replay survives partial corruption
+- 恢复运行可跳过已成功任务 / resumed run skips already succeeded tasks
 
-## Step 5: Observability and Scheduling Enhancements (M5)
+## Step 5: 可观测性与调度增强（M5） / Observability and Scheduling (M5)
 - Tasks:
-  - add queue/wait/retry metrics and failure categories
-  - implement basic resource-aware scheduling limits
+- 增加排队/重试/失败分类指标 / add queue/retry/failure-category metrics
+- 实现基础资源约束调度 / implement resource-aware scheduling limits
 - Output:
-  - updates in observer/scheduler/state modules
+- 更新 observer/scheduler/state 模块
 - Verification:
-  - new metrics appear in `metrics.prom`
-  - scheduler behavior respects configured limits
+- `metrics.prom` 包含新指标 / new metrics appear in `metrics.prom`
+- 调度行为符合资源上限 / scheduler respects configured limits
 
-## Step 6: Packaging + Release (M6)
+## Step 6: 打包与发布（M6） / Packaging + Release (M6)
 - Tasks:
-  - finalize deployment docs and service template usage
-  - prepare changelog + versioning + release checklist
+- 完成部署文档与服务模板 / finalize deployment docs and service template
+- 完成 changelog、版本与发布清单 / prepare changelog, versioning, release checklist
 - Output:
-  - `CHANGELOG.md`
-  - docs updates in `README.md` and `packaging/`
+- `CHANGELOG.md`
+- `README.md` 与 `packaging/` 更新
 - Verification:
-  - local release gates passed:
-    - `cmake --preset debug && cmake --build --preset debug && ctest --test-dir build/debug --output-on-failure`
-    - `cmake --preset asan && cmake --build --preset asan && ASAN_OPTIONS=detect_leaks=0 ctest --test-dir build/asan --output-on-failure`
-    - `cmake --preset tsan && cmake --build --preset tsan && ctest --test-dir build/tsan --output-on-failure`
-  - docs and packaging artifacts prepared for host deployment:
-    - `docs/DEPLOYMENT.md`
-    - `packaging/dag-scheduler.service`
-    - `docs/RELEASE_CHECKLIST.md`
+- 本地发布门禁通过 / local release gates passed:
+- `cmake --preset debug && cmake --build --preset debug && ctest --test-dir build/debug --output-on-failure`
+- `cmake --preset asan && cmake --build --preset asan && ASAN_OPTIONS=detect_leaks=0 ctest --test-dir build/asan --output-on-failure`
+- `cmake --preset tsan && cmake --build --preset tsan && ctest --test-dir build/tsan --output-on-failure`
+- 已准备部署相关文档与模板 / deployment artifacts prepared:
+- `docs/DEPLOYMENT.md`
+- `packaging/dag-scheduler.service`
+- `docs/RELEASE_CHECKLIST.md`
 
-## Work Cadence
-- Open one PR per step when feasible.
-- Each PR must include:
-  - code/tests/docs changes together
-  - acceptance evidence (test output or example command)
+## 工作节奏 / Work Cadence
+- 可行时按步骤拆 PR / open one PR per step when feasible.
+- 每个 PR 需包含 / each PR must include:
+- 代码、测试、文档同步更新 / code, tests, docs together
+- 验收证据（命令输出或示例） / acceptance evidence (output/logs)
 
-## Tracking Template
-Use this status block for each step:
+## 跟踪模板 / Tracking Template
 - Status: `todo | in_progress | blocked | done`
 - Owner: `<name>`
 - Target date: `YYYY-MM-DD`
