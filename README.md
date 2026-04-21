@@ -1,8 +1,9 @@
 # C++ DAG 本地任务调度器 / C++ DAG Local Task Scheduler
 
-语言选择 / Language:
-- 简体中文: `README.zh.md`
-- English: `README.en.md`
+<p align="center">
+  <a href="./README.zh.md"><img alt="简体中文 (当前)" src="https://img.shields.io/badge/%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-%E5%BD%93%E5%89%8D-1677ff"></a>
+  <a href="./README.en.md"><img alt="English" src="https://img.shields.io/badge/English-Switch-0f172a"></a>
+</p>
 
 一个可在 Debian 上运行的本地 DAG 工作流执行器。
 A local DAG workflow executor for Debian.
