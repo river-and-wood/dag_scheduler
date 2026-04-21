@@ -1,0 +1,25 @@
+[Unit]
+Description=Local DAG Scheduler Service
+After=network.target
+
+[Service]
+Type=simple
+User=dag
+Group=dag
+WorkingDirectory=/opt/my-dag-scheduler
+ExecStart=/opt/my-dag-scheduler/bin/dag_scheduler run \
+  --workflow /opt/my-dag-scheduler/workflows/sample.workflow \
+  --workers 4 \
+  --report /var/lib/my-dag-scheduler/report.json \
+  --metrics /var/lib/my-dag-scheduler/metrics.prom \
+  --events /var/log/my-dag-scheduler/events.jsonl \
+  --log /var/log/my-dag-scheduler/run.log
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/my-dag-scheduler /var/log/my-dag-scheduler
+
+[Install]
+WantedBy=multi-user.target
