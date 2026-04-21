@@ -1,6 +1,7 @@
 #include "dag/replay.hpp"
 
 #include <fstream>
+#include <optional>
 #include <stdexcept>
 
 namespace dag {
@@ -34,23 +35,23 @@ std::string extract_json_string(const std::string& line, const std::string& key)
     return out;
 }
 
-TaskStatus parse_terminal_details(const std::string& details) {
+std::optional<TaskStatus> parse_terminal_details(const std::string& details) {
     if (details.rfind("Succeeded", 0) == 0) {
-        return TaskStatus::Succeeded;
+        return std::optional<TaskStatus>{TaskStatus::Succeeded};
     }
     if (details.rfind("Failed", 0) == 0) {
-        return TaskStatus::Failed;
+        return std::optional<TaskStatus>{TaskStatus::Failed};
     }
     if (details.rfind("TimedOut", 0) == 0) {
-        return TaskStatus::TimedOut;
+        return std::optional<TaskStatus>{TaskStatus::TimedOut};
     }
     if (details.rfind("Skipped", 0) == 0) {
-        return TaskStatus::Skipped;
+        return std::optional<TaskStatus>{TaskStatus::Skipped};
     }
     if (details.rfind("Canceled", 0) == 0) {
-        return TaskStatus::Canceled;
+        return std::optional<TaskStatus>{TaskStatus::Canceled};
     }
-    throw std::runtime_error("unknown terminal details: " + details);
+    return std::nullopt;
 }
 
 }  // namespace
@@ -84,7 +85,10 @@ std::unordered_map<std::string, TaskStatus> EventReplayer::replay_file(const std
         } else if (event == "skipped") {
             states[task_id] = TaskStatus::Skipped;
         } else if (event == "terminal") {
-            states[task_id] = parse_terminal_details(details);
+            const auto status = parse_terminal_details(details);
+            if (status.has_value()) {
+                states[task_id] = *status;
+            }
         }
     }
 

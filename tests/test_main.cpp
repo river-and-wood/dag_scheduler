@@ -322,6 +322,26 @@ void test_event_replay_summary() {
     ASSERT_EQ(summary.skipped, 1);
 }
 
+void test_event_replay_tolerates_malformed_lines() {
+    TempDir t;
+    const fs::path events = t.path / "malformed_events.jsonl";
+    write_file(events,
+               "{\"ts\":\"2026-01-01T00:00:00Z\",\"task_id\":\"A\",\"event\":\"init\",\"details\":\"pending\"}\n"
+               "this is not json at all\n"
+               "{\"ts\":\"2026-01-01T00:00:01Z\",\"task_id\":\"A\",\"event\":\"terminal\",\"details\":\"Succeeded, exit_code=0\"}\n"
+               "{\"ts\":\"2026-01-01T00:00:01Z\",\"task_id\":\"B\",\"event\":\"terminal\",\"details\":\"UnknownState, exit_code=0\"}\n");
+
+    dag::EventReplayer replayer;
+    auto states = replayer.replay_file(events.string());
+    auto summary = replayer.summarize(states);
+
+    ASSERT_EQ(summary.total, 1);
+    ASSERT_EQ(summary.succeeded, 1);
+    ASSERT_EQ(summary.failed, 0);
+    ASSERT_EQ(summary.timed_out, 0);
+    ASSERT_EQ(summary.skipped, 0);
+}
+
 void test_parser_rejects_unknown_task_key() {
     TempDir t;
     const fs::path workflow = t.path / "unknown_key.workflow";
@@ -356,6 +376,7 @@ int main() {
         {"fail_fast_skips_remaining_ready_tasks", test_fail_fast_skips_remaining_ready_tasks},
         {"timeout", test_timeout},
         {"event_replay_summary", test_event_replay_summary},
+        {"event_replay_tolerates_malformed_lines", test_event_replay_tolerates_malformed_lines},
         {"parser_rejects_unknown_task_key", test_parser_rejects_unknown_task_key},
     };
 
