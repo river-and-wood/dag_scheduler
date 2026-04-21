@@ -1,13 +1,76 @@
 #include "dag/executor.hpp"
 
+#include <cctype>
 #include <csignal>
 #include <stdexcept>
+#include <vector>
 
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 namespace dag {
+namespace {
+
+bool has_shell_metachar(const std::string& command) {
+    constexpr const char* kMetachars = "|&;<>()$`'\"*?![]{}~\\";
+    for (char ch : command) {
+        if (ch == '\n' || ch == '\r') {
+            return true;
+        }
+        for (const char* p = kMetachars; *p != '\0'; ++p) {
+            if (ch == *p) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+std::vector<std::string> split_simple_argv(const std::string& command) {
+    std::vector<std::string> out;
+    std::size_t i = 0;
+    while (i < command.size()) {
+        while (i < command.size() && std::isspace(static_cast<unsigned char>(command[i]))) {
+            ++i;
+        }
+        if (i >= command.size()) {
+            break;
+        }
+        std::size_t start = i;
+        while (i < command.size() && !std::isspace(static_cast<unsigned char>(command[i]))) {
+            ++i;
+        }
+        out.push_back(command.substr(start, i - start));
+    }
+    return out;
+}
+
+bool can_use_execvp_fast_path(const std::string& command) {
+    if (command.empty() || has_shell_metachar(command)) {
+        return false;
+    }
+    const std::vector<std::string> argv_tokens = split_simple_argv(command);
+    return !argv_tokens.empty();
+}
+
+[[noreturn]] void exec_command_fast_or_shell(const std::string& command) {
+    if (can_use_execvp_fast_path(command)) {
+        const std::vector<std::string> argv_tokens = split_simple_argv(command);
+        std::vector<char*> argv;
+        argv.reserve(argv_tokens.size() + 1);
+        for (const auto& token : argv_tokens) {
+            argv.push_back(const_cast<char*>(token.c_str()));
+        }
+        argv.push_back(nullptr);
+        execvp(argv[0], argv.data());
+    }
+
+    execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char*>(nullptr));
+    _exit(127);
+}
+
+}  // namespace
 
 ThreadPoolExecutor::ThreadPoolExecutor(std::size_t workers) {
     if (workers == 0) {
@@ -105,8 +168,7 @@ ExecutionResult ThreadPoolExecutor::run_command(const TaskSpec& spec, int attemp
     }
 
     if (pid == 0) {
-        execl("/bin/sh", "sh", "-c", spec.command.c_str(), static_cast<char*>(nullptr));
-        _exit(127);
+        exec_command_fast_or_shell(spec.command);
     }
 
     int status = 0;

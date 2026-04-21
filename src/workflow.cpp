@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 #include <stdexcept>
 
@@ -77,6 +79,17 @@ std::pair<std::string, std::string> parse_key_value(const std::string& line) {
         return {trim(line), ""};
     }
     return {trim(line.substr(0, space)), trim(line.substr(space + 1))};
+}
+
+std::uint64_t fnv1a_64(const std::string& data) {
+    constexpr std::uint64_t kOffset = 1469598103934665603ULL;
+    constexpr std::uint64_t kPrime = 1099511628211ULL;
+    std::uint64_t hash = kOffset;
+    for (unsigned char ch : data) {
+        hash ^= static_cast<std::uint64_t>(ch);
+        hash *= kPrime;
+    }
+    return hash;
 }
 
 }  // namespace
@@ -183,6 +196,41 @@ WorkflowSpec WorkflowParser::parse_file(const std::string& path) const {
         throw std::runtime_error("workflow has no tasks");
     }
     return spec;
+}
+
+std::string compute_workflow_fingerprint(const WorkflowSpec& spec) {
+    std::vector<TaskSpec> tasks = spec.tasks;
+    std::sort(tasks.begin(), tasks.end(), [](const TaskSpec& lhs, const TaskSpec& rhs) {
+        return lhs.id < rhs.id;
+    });
+
+    std::ostringstream canonical;
+    canonical << "workflow:" << spec.name << '\n';
+    canonical << "fail_fast:" << (spec.fail_fast ? "1" : "0") << '\n';
+
+    for (const auto& task : tasks) {
+        std::vector<std::string> deps = task.dependencies;
+        std::sort(deps.begin(), deps.end());
+        canonical << "task:" << task.id << '\n';
+        canonical << "cmd:" << task.command << '\n';
+        canonical << "retries:" << task.max_retries << '\n';
+        canonical << "timeout_ms:" << task.timeout_ms << '\n';
+        canonical << "priority:" << task.priority << '\n';
+        canonical << "resource:" << to_string(task.resource_class) << '\n';
+        canonical << "deps:";
+        for (std::size_t i = 0; i < deps.size(); ++i) {
+            if (i > 0) {
+                canonical << ',';
+            }
+            canonical << deps[i];
+        }
+        canonical << '\n';
+    }
+
+    const std::uint64_t hash = fnv1a_64(canonical.str());
+    std::ostringstream out;
+    out << std::hex << std::nouppercase << std::setfill('0') << std::setw(16) << hash;
+    return out.str();
 }
 
 }  // namespace dag

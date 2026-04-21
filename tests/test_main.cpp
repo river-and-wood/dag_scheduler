@@ -356,6 +356,22 @@ void test_event_replay_tolerates_malformed_lines() {
     ASSERT_EQ(summary.skipped, 0);
 }
 
+void test_event_replay_parses_escaped_json_strings() {
+    TempDir t;
+    const fs::path events = t.path / "escaped_events.jsonl";
+    write_file(events,
+               "{\"ts\":\"2026-01-01T00:00:00Z\",\"task_id\":\"A\",\"event\":\"terminal\","
+               "\"details\":\"Succeeded, message=\\\"ok\\\"\"}\n");
+
+    dag::EventReplayer replayer;
+    const auto states = replayer.replay_file(events.string());
+    const auto summary = replayer.summarize(states);
+
+    ASSERT_EQ(summary.total, 1);
+    ASSERT_EQ(summary.succeeded, 1);
+    ASSERT_EQ(summary.failed, 0);
+}
+
 void test_event_replay_uses_latest_run_per_workflow() {
     TempDir t;
     const fs::path events = t.path / "mixed_runs_events.jsonl";
@@ -378,6 +394,56 @@ void test_event_replay_uses_latest_run_per_workflow() {
     ASSERT_EQ(summary.skipped, 0);
 }
 
+void test_workflow_fingerprint_stable_for_task_order() {
+    TempDir t;
+    const fs::path workflow_a = t.path / "fingerprint_a.workflow";
+    const fs::path workflow_b = t.path / "fingerprint_b.workflow";
+
+    write_file(workflow_a,
+               "workflow fp\n"
+               "fail_fast false\n"
+               "task A\n"
+               "  cmd: true\n"
+               "  deps: C, B\n"
+               "  retries: 1\n"
+               "  timeout_ms: 100\n"
+               "  priority: 2\n"
+               "  resource: cpu\n"
+               "end\n"
+               "task B\n"
+               "  cmd: true\n"
+               "end\n"
+               "task C\n"
+               "  cmd: true\n"
+               "end\n");
+
+    write_file(workflow_b,
+               "workflow fp\n"
+               "task C\n"
+               "  cmd: true\n"
+               "end\n"
+               "task B\n"
+               "  cmd: true\n"
+               "end\n"
+               "task A\n"
+               "  cmd: true\n"
+               "  deps: B, C\n"
+               "  retries: 1\n"
+               "  timeout_ms: 100\n"
+               "  priority: 2\n"
+               "  resource: cpu\n"
+               "end\n"
+               "fail_fast false\n");
+
+    dag::WorkflowParser parser;
+    const dag::WorkflowSpec spec_a = parser.parse_file(workflow_a.string());
+    const dag::WorkflowSpec spec_b = parser.parse_file(workflow_b.string());
+
+    const std::string fp_a = dag::compute_workflow_fingerprint(spec_a);
+    const std::string fp_b = dag::compute_workflow_fingerprint(spec_b);
+    ASSERT_EQ(fp_a, fp_b);
+}
+
 void test_resume_does_not_cross_workflow_from_events() {
     TempDir t;
     const fs::path events = t.path / "resume_mixed.workflow.events";
@@ -394,6 +460,40 @@ void test_resume_does_not_cross_workflow_from_events() {
     dag::EventReplayer replayer;
     dag::ReplayFilter filter;
     filter.workflow = "new-workflow";
+    const auto resume_states = replayer.replay_file(events.string(), filter);
+
+    dag::RunResult result = run_workflow(workflow, 1, {}, resume_states);
+    ASSERT_TRUE(!result.success);
+    ASSERT_EQ(result.failed, 1);
+}
+
+void test_resume_requires_matching_workflow_fingerprint() {
+    TempDir t;
+    const fs::path events = t.path / "resume_fingerprint.events";
+    const fs::path workflow = t.path / "resume_fingerprint.workflow";
+
+    write_file(workflow,
+               "workflow same-workflow\n"
+               "task A\n"
+               "  cmd: exit 9\n"
+               "end\n");
+
+    dag::WorkflowParser parser;
+    const dag::WorkflowSpec spec = parser.parse_file(workflow.string());
+    std::string wrong_fp = dag::compute_workflow_fingerprint(spec);
+    wrong_fp[0] = (wrong_fp[0] == 'a') ? 'b' : 'a';
+
+    write_file(events,
+               "{\"ts\":\"2026-01-01T00:00:00Z\",\"run_id\":\"run-old\",\"workflow\":\"same-workflow\","
+               "\"workflow_fingerprint\":\"" +
+                   wrong_fp +
+                   "\",\"task_id\":\"A\",\"event\":\"terminal\","
+                   "\"details\":\"Succeeded, exit_code=0\"}\n");
+
+    dag::EventReplayer replayer;
+    dag::ReplayFilter filter;
+    filter.workflow = "same-workflow";
+    filter.workflow_fingerprint = dag::compute_workflow_fingerprint(spec);
     const auto resume_states = replayer.replay_file(events.string(), filter);
 
     dag::RunResult result = run_workflow(workflow, 1, {}, resume_states);
@@ -529,8 +629,12 @@ int main() {
         {"timeout", test_timeout},
         {"event_replay_summary", test_event_replay_summary},
         {"event_replay_tolerates_malformed_lines", test_event_replay_tolerates_malformed_lines},
+        {"event_replay_parses_escaped_json_strings", test_event_replay_parses_escaped_json_strings},
         {"event_replay_uses_latest_run_per_workflow", test_event_replay_uses_latest_run_per_workflow},
+        {"workflow_fingerprint_stable_for_task_order", test_workflow_fingerprint_stable_for_task_order},
         {"resume_does_not_cross_workflow_from_events", test_resume_does_not_cross_workflow_from_events},
+        {"resume_requires_matching_workflow_fingerprint",
+         test_resume_requires_matching_workflow_fingerprint},
         {"parser_rejects_unknown_task_key", test_parser_rejects_unknown_task_key},
         {"resume_skips_already_succeeded_task", test_resume_skips_already_succeeded_task},
         {"resource_cpu_limit_serializes_cpu_tasks", test_resource_cpu_limit_serializes_cpu_tasks},

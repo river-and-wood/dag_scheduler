@@ -1,40 +1,15 @@
 #include "dag/replay.hpp"
 
+#include <cctype>
 #include <fstream>
 #include <optional>
+#include <string_view>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 namespace dag {
 namespace {
-
-std::string extract_json_string(const std::string& line, const std::string& key) {
-    const std::string pattern = "\"" + key + "\":\"";
-    const auto start = line.find(pattern);
-    if (start == std::string::npos) {
-        return "";
-    }
-    std::size_t i = start + pattern.size();
-    std::string out;
-    bool escaped = false;
-    for (; i < line.size(); ++i) {
-        const char ch = line[i];
-        if (escaped) {
-            out.push_back(ch);
-            escaped = false;
-            continue;
-        }
-        if (ch == '\\') {
-            escaped = true;
-            continue;
-        }
-        if (ch == '"') {
-            break;
-        }
-        out.push_back(ch);
-    }
-    return out;
-}
 
 std::optional<TaskStatus> parse_terminal_details(const std::string& details) {
     if (details.rfind("Succeeded", 0) == 0) {
@@ -61,13 +36,246 @@ struct ParsedEvent {
     std::string details;
     std::string run_id;
     std::string workflow;
+    std::string workflow_fingerprint;
 };
+
+class JsonLineParser {
+public:
+    explicit JsonLineParser(std::string_view input) : input_(input) {}
+
+    std::unordered_map<std::string, std::string> parse_string_object() {
+        std::unordered_map<std::string, std::string> out;
+
+        skip_ws();
+        expect('{');
+        skip_ws();
+
+        if (consume_if('}')) {
+            return out;
+        }
+
+        while (true) {
+            skip_ws();
+            const std::string key = parse_string();
+            skip_ws();
+            expect(':');
+            skip_ws();
+
+            if (peek() == '"') {
+                out[key] = parse_string();
+            } else {
+                skip_non_string_value();
+            }
+
+            skip_ws();
+            if (consume_if(',')) {
+                continue;
+            }
+            expect('}');
+            break;
+        }
+
+        skip_ws();
+        if (pos_ != input_.size()) {
+            throw std::runtime_error("trailing content after JSON object");
+        }
+        return out;
+    }
+
+private:
+    void skip_ws() {
+        while (pos_ < input_.size() && std::isspace(static_cast<unsigned char>(input_[pos_]))) {
+            ++pos_;
+        }
+    }
+
+    char peek() const {
+        if (pos_ >= input_.size()) {
+            return '\0';
+        }
+        return input_[pos_];
+    }
+
+    bool consume_if(char ch) {
+        if (peek() != ch) {
+            return false;
+        }
+        ++pos_;
+        return true;
+    }
+
+    void expect(char ch) {
+        if (!consume_if(ch)) {
+            throw std::runtime_error("invalid JSON format");
+        }
+    }
+
+    std::string parse_string() {
+        expect('"');
+        std::string out;
+        while (pos_ < input_.size()) {
+            char ch = input_[pos_++];
+            if (ch == '"') {
+                return out;
+            }
+            if (ch != '\\') {
+                out.push_back(ch);
+                continue;
+            }
+
+            if (pos_ >= input_.size()) {
+                throw std::runtime_error("invalid JSON escape");
+            }
+            const char esc = input_[pos_++];
+            switch (esc) {
+                case '"':
+                    out.push_back('"');
+                    break;
+                case '\\':
+                    out.push_back('\\');
+                    break;
+                case '/':
+                    out.push_back('/');
+                    break;
+                case 'b':
+                    out.push_back('\b');
+                    break;
+                case 'f':
+                    out.push_back('\f');
+                    break;
+                case 'n':
+                    out.push_back('\n');
+                    break;
+                case 'r':
+                    out.push_back('\r');
+                    break;
+                case 't':
+                    out.push_back('\t');
+                    break;
+                case 'u': {
+                    // Keep parser lightweight: consume 4 hex digits and store raw marker.
+                    for (int i = 0; i < 4; ++i) {
+                        if (pos_ >= input_.size() || !std::isxdigit(static_cast<unsigned char>(input_[pos_]))) {
+                            throw std::runtime_error("invalid unicode escape");
+                        }
+                        ++pos_;
+                    }
+                    out.push_back('?');
+                    break;
+                }
+                default:
+                    throw std::runtime_error("invalid JSON escape");
+            }
+        }
+        throw std::runtime_error("unterminated JSON string");
+    }
+
+    void skip_string_value() {
+        (void)parse_string();
+    }
+
+    void skip_non_string_value() {
+        const char ch = peek();
+        if (ch == '"') {
+            skip_string_value();
+            return;
+        }
+        if (ch == '{' || ch == '[') {
+            skip_composite_value();
+            return;
+        }
+
+        while (pos_ < input_.size()) {
+            const char cur = input_[pos_];
+            if (cur == ',' || cur == '}' || std::isspace(static_cast<unsigned char>(cur))) {
+                break;
+            }
+            ++pos_;
+        }
+    }
+
+    void skip_composite_value() {
+        std::vector<char> stack;
+        const char start = peek();
+        stack.push_back(start == '{' ? '}' : ']');
+        ++pos_;
+
+        while (pos_ < input_.size() && !stack.empty()) {
+            const char ch = input_[pos_];
+            if (ch == '"') {
+                skip_string_value();
+                continue;
+            }
+
+            if (ch == '{') {
+                stack.push_back('}');
+                ++pos_;
+                continue;
+            }
+            if (ch == '[') {
+                stack.push_back(']');
+                ++pos_;
+                continue;
+            }
+            if (ch == stack.back()) {
+                stack.pop_back();
+                ++pos_;
+                continue;
+            }
+            ++pos_;
+        }
+
+        if (!stack.empty()) {
+            throw std::runtime_error("unterminated JSON composite value");
+        }
+    }
+
+    std::string_view input_;
+    std::size_t pos_{0};
+};
+
+std::optional<ParsedEvent> parse_event_line(const std::string& line) {
+    try {
+        JsonLineParser parser(line);
+        const auto obj = parser.parse_string_object();
+
+        ParsedEvent entry;
+        auto get_value = [&](const std::string& key) -> std::string {
+            const auto it = obj.find(key);
+            if (it == obj.end()) {
+                return "";
+            }
+            return it->second;
+        };
+
+        entry.task_id = get_value("task_id");
+        entry.event = get_value("event");
+        entry.details = get_value("details");
+        entry.run_id = get_value("run_id");
+        entry.workflow = get_value("workflow");
+        entry.workflow_fingerprint = get_value("workflow_fingerprint");
+
+        if (entry.task_id.empty() || entry.event.empty()) {
+            return std::nullopt;
+        }
+        return entry;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
 
 bool matches_filter(const ParsedEvent& entry,
                     const ReplayFilter& filter,
                     const std::string& effective_run_id) {
     if (!filter.workflow.empty()) {
         if (entry.workflow.empty() || entry.workflow != filter.workflow) {
+            return false;
+        }
+    }
+
+    if (!filter.workflow_fingerprint.empty()) {
+        if (entry.workflow_fingerprint.empty() ||
+            entry.workflow_fingerprint != filter.workflow_fingerprint) {
             return false;
         }
     }
@@ -116,30 +324,36 @@ std::unordered_map<std::string, TaskStatus> EventReplayer::replay_file(
     }
 
     std::vector<ParsedEvent> entries;
-    std::string latest_run_id_for_workflow;
+    std::string latest_run_id_for_scope;
 
     std::string line;
     while (std::getline(in, line)) {
-        ParsedEvent entry;
-        entry.task_id = extract_json_string(line, "task_id");
-        entry.event = extract_json_string(line, "event");
-        entry.details = extract_json_string(line, "details");
-        entry.run_id = extract_json_string(line, "run_id");
-        entry.workflow = extract_json_string(line, "workflow");
-
-        if (entry.task_id.empty() || entry.event.empty()) {
+        const std::optional<ParsedEvent> parsed = parse_event_line(line);
+        if (!parsed.has_value()) {
             continue;
         }
-        entries.push_back(entry);
+        entries.push_back(*parsed);
 
-        if (!filter.workflow.empty() && entry.workflow == filter.workflow && !entry.run_id.empty()) {
-            latest_run_id_for_workflow = entry.run_id;
+        if (!filter.run_id.empty()) {
+            continue;
+        }
+
+        const ParsedEvent& entry = entries.back();
+        if (!filter.workflow.empty() && entry.workflow != filter.workflow) {
+            continue;
+        }
+        if (!filter.workflow_fingerprint.empty() &&
+            entry.workflow_fingerprint != filter.workflow_fingerprint) {
+            continue;
+        }
+        if (!entry.run_id.empty()) {
+            latest_run_id_for_scope = entry.run_id;
         }
     }
 
     std::string effective_run_id = filter.run_id;
-    if (effective_run_id.empty() && !filter.workflow.empty()) {
-        effective_run_id = latest_run_id_for_workflow;
+    if (effective_run_id.empty() && (!filter.workflow.empty() || !filter.workflow_fingerprint.empty())) {
+        effective_run_id = latest_run_id_for_scope;
     }
 
     std::unordered_map<std::string, TaskStatus> states;

@@ -59,6 +59,10 @@ end
 - `resource`: 资源类型（`default`/`cpu`/`io`） / resource class (`default`/`cpu`/`io`)
 - `end`: 任务块结束 / task block end
 
+执行优化说明 / Execution optimization note:
+- 对不包含 shell 元字符的简单命令，执行器会直接走 `execvp` 快路径；复杂命令仍走 `/bin/sh -c`。  
+  For simple commands without shell metacharacters, executor uses a direct `execvp` fast path; complex commands still use `/bin/sh -c`.
+
 ## 构建 / Build
 
 ```bash
@@ -100,6 +104,8 @@ cmake --build --preset debug
   Reads the event log and restores terminal tasks to avoid re-running them.
 - 恢复范围限制为同名 `workflow` 的最近一次运行；不同 workflow 的历史事件不会参与恢复。  
   Resume scope is limited to the latest run of the same `workflow`; events from other workflows are ignored.
+- 恢复会校验 `workflow` 指纹（任务定义/依赖/策略摘要哈希）；指纹不一致的历史事件会被忽略。  
+  Resume enforces a workflow fingerprint check; events with mismatched fingerprints are ignored.
 
 `--max-cpu` / `--max-io`:
 - 用于限制 `resource: cpu/io` 任务的并发数。  

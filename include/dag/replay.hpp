@@ -9,6 +9,7 @@ namespace dag {
 
 struct ReplayFilter {
     std::string workflow;
+    std::string workflow_fingerprint;
     std::string run_id;
 };
 

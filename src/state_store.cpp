@@ -62,10 +62,13 @@ StateStore::StateStore(std::string event_log_path) {
     }
 }
 
-void StateStore::set_event_context(std::string run_id, std::string workflow_name) {
+void StateStore::set_event_context(std::string run_id,
+                                   std::string workflow_name,
+                                   std::string workflow_fingerprint) {
     std::lock_guard<std::mutex> lock(mutex_);
     event_run_id_ = std::move(run_id);
     event_workflow_name_ = std::move(workflow_name);
+    event_workflow_fingerprint_ = std::move(workflow_fingerprint);
 }
 
 void StateStore::initialize(const WorkflowSpec& spec) {
@@ -215,6 +218,7 @@ void StateStore::append_event_unlocked(const std::string& task_id,
     *event_log_ << "{\"ts\":\"" << now_iso8601() << "\","
                 << "\"run_id\":\"" << escape_json(event_run_id_) << "\","
                 << "\"workflow\":\"" << escape_json(event_workflow_name_) << "\","
+                << "\"workflow_fingerprint\":\"" << escape_json(event_workflow_fingerprint_) << "\","
                 << "\"task_id\":\"" << escape_json(task_id) << "\","
                 << "\"event\":\"" << escape_json(event) << "\","
                 << "\"details\":\"" << escape_json(details) << "\"}"

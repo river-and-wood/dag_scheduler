@@ -124,13 +124,14 @@ int run_validate(const CliOptions& opts) {
 int run_scheduler(const CliOptions& opts) {
     dag::WorkflowParser parser;
     const dag::WorkflowSpec spec = parser.parse_file(opts.workflow_path);
+    const std::string workflow_fingerprint = dag::compute_workflow_fingerprint(spec);
 
     dag::DagBuilder builder;
     const dag::DagGraph graph = builder.build(spec);
 
     dag::ThreadPoolExecutor executor(opts.workers);
     dag::StateStore state_store(opts.events_path);
-    state_store.set_event_context(opts.run_id, spec.name);
+    state_store.set_event_context(opts.run_id, spec.name, workflow_fingerprint);
     dag::Observer observer(opts.run_id, opts.log_path);
     observer.info("starting workflow: " + spec.name);
 
@@ -139,6 +140,7 @@ int run_scheduler(const CliOptions& opts) {
         dag::EventReplayer replayer;
         dag::ReplayFilter filter;
         filter.workflow = spec.name;
+        filter.workflow_fingerprint = workflow_fingerprint;
         if (opts.run_id_explicit) {
             filter.run_id = opts.run_id;
         }

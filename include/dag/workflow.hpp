@@ -11,4 +11,6 @@ public:
     WorkflowSpec parse_file(const std::string& path) const;
 };
 
+std::string compute_workflow_fingerprint(const WorkflowSpec& spec);
+
 }  // namespace dag
