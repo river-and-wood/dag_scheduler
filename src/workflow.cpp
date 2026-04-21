@@ -53,6 +53,19 @@ bool parse_bool(const std::string& val) {
     throw std::runtime_error("invalid bool value: " + val);
 }
 
+TaskResourceClass parse_resource_class(const std::string& val) {
+    if (val == "default") {
+        return TaskResourceClass::Default;
+    }
+    if (val == "cpu") {
+        return TaskResourceClass::Cpu;
+    }
+    if (val == "io") {
+        return TaskResourceClass::Io;
+    }
+    throw std::runtime_error("invalid resource value: " + val);
+}
+
 std::pair<std::string, std::string> parse_key_value(const std::string& line) {
     const auto colon = line.find(':');
     if (colon != std::string::npos) {
@@ -150,6 +163,8 @@ WorkflowSpec WorkflowParser::parse_file(const std::string& path) const {
                 }
             } else if (key == "priority") {
                 current.priority = parse_int(key, val);
+            } else if (key == "resource") {
+                current.resource_class = parse_resource_class(val);
             } else {
                 throw std::runtime_error("line " + std::to_string(line_no) + ": unknown task key '" + key + "'");
             }

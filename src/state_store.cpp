@@ -86,6 +86,7 @@ void StateStore::mark_ready(const std::string& task_id) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto& task = states_.at(task_id);
     task.status = TaskStatus::Ready;
+    task.ready_time = std::chrono::system_clock::now();
     append_event_unlocked(task_id, "ready", "");
 }
 
@@ -95,6 +96,9 @@ void StateStore::mark_running(const std::string& task_id, int attempt) {
     task.status = TaskStatus::Running;
     task.attempt = attempt;
     task.start_time = std::chrono::system_clock::now();
+    if (task.ready_time.time_since_epoch().count() != 0) {
+        task.queue_wait = std::chrono::duration_cast<std::chrono::milliseconds>(task.start_time - task.ready_time);
+    }
     append_event_unlocked(task_id, "running", "attempt=" + std::to_string(attempt));
 }
 

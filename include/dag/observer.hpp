@@ -23,7 +23,12 @@ public:
                      int timed_out,
                      int skipped,
                      int retries,
-                     long long duration_ms);
+                     long long duration_ms,
+                     long long queue_wait_total_ms,
+                     long long queue_wait_max_ms,
+                     int queue_wait_samples,
+                     int failed_nonzero,
+                     int failed_signal);
 
     void write_metrics(const std::string& path) const;
     void write_report(const std::string& path,
@@ -48,6 +53,11 @@ private:
     int skipped_{0};
     int retries_{0};
     long long duration_ms_{0};
+    long long queue_wait_total_ms_{0};
+    long long queue_wait_max_ms_{0};
+    int queue_wait_samples_{0};
+    int failed_nonzero_{0};
+    int failed_signal_{0};
 };
 
 }  // namespace dag

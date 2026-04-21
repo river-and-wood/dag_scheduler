@@ -48,6 +48,7 @@ void Observer::task_event(const TaskRuntimeSnapshot& task, const std::string& ev
             << "\"attempt\":" << task.attempt << ","
             << "\"exit_code\":" << task.exit_code << ","
             << "\"timed_out\":" << (task.timed_out ? "true" : "false") << ","
+            << "\"queue_wait_ms\":" << task.queue_wait.count() << ","
             << "\"duration_ms\":" << task.duration.count() << ","
             << "\"message\":\"" << escape_json(task.message) << "\"}";
     write_json_line("INFO", "task", payload.str());
@@ -59,7 +60,12 @@ void Observer::set_summary(int total,
                            int timed_out,
                            int skipped,
                            int retries,
-                           long long duration_ms) {
+                           long long duration_ms,
+                           long long queue_wait_total_ms,
+                           long long queue_wait_max_ms,
+                           int queue_wait_samples,
+                           int failed_nonzero,
+                           int failed_signal) {
     std::lock_guard<std::mutex> lock(mutex_);
     total_ = total;
     succeeded_ = succeeded;
@@ -68,6 +74,11 @@ void Observer::set_summary(int total,
     skipped_ = skipped;
     retries_ = retries;
     duration_ms_ = duration_ms;
+    queue_wait_total_ms_ = queue_wait_total_ms;
+    queue_wait_max_ms_ = queue_wait_max_ms;
+    queue_wait_samples_ = queue_wait_samples;
+    failed_nonzero_ = failed_nonzero;
+    failed_signal_ = failed_signal;
 }
 
 void Observer::write_metrics(const std::string& path) const {
@@ -95,6 +106,31 @@ void Observer::write_metrics(const std::string& path) const {
     out << "# HELP dag_run_duration_ms Total run duration in milliseconds.\n";
     out << "# TYPE dag_run_duration_ms gauge\n";
     out << "dag_run_duration_ms{run_id=\"" << run_id_ << "\"} " << duration_ms_ << "\n";
+
+    out << "# HELP dag_queue_wait_total_ms Sum of task queue wait time in milliseconds.\n";
+    out << "# TYPE dag_queue_wait_total_ms gauge\n";
+    out << "dag_queue_wait_total_ms{run_id=\"" << run_id_ << "\"} " << queue_wait_total_ms_ << "\n";
+
+    out << "# HELP dag_queue_wait_max_ms Max task queue wait time in milliseconds.\n";
+    out << "# TYPE dag_queue_wait_max_ms gauge\n";
+    out << "dag_queue_wait_max_ms{run_id=\"" << run_id_ << "\"} " << queue_wait_max_ms_ << "\n";
+
+    out << "# HELP dag_queue_wait_avg_ms Average task queue wait time in milliseconds.\n";
+    out << "# TYPE dag_queue_wait_avg_ms gauge\n";
+    const double avg_queue_wait = queue_wait_samples_ > 0
+                                      ? static_cast<double>(queue_wait_total_ms_) /
+                                            static_cast<double>(queue_wait_samples_)
+                                      : 0.0;
+    out << "dag_queue_wait_avg_ms{run_id=\"" << run_id_ << "\"} " << avg_queue_wait << "\n";
+
+    out << "# HELP dag_failures_total Total terminal failures by reason.\n";
+    out << "# TYPE dag_failures_total gauge\n";
+    out << "dag_failures_total{run_id=\"" << run_id_ << "\",reason=\"non_zero_exit\"} "
+        << failed_nonzero_ << "\n";
+    out << "dag_failures_total{run_id=\"" << run_id_ << "\",reason=\"signal\"} " << failed_signal_
+        << "\n";
+    out << "dag_failures_total{run_id=\"" << run_id_ << "\",reason=\"timed_out\"} " << timed_out_
+        << "\n";
 }
 
 void Observer::write_report(const std::string& path,
@@ -133,6 +169,7 @@ void Observer::write_report(const std::string& path,
         out << "      \"max_retries\": " << t.max_retries << ",\n";
         out << "      \"exit_code\": " << t.exit_code << ",\n";
         out << "      \"timed_out\": " << (t.timed_out ? "true" : "false") << ",\n";
+        out << "      \"queue_wait_ms\": " << t.queue_wait.count() << ",\n";
         out << "      \"duration_ms\": " << t.duration.count() << ",\n";
         out << "      \"start_time\": \"" << timepoint_to_iso8601(t.start_time) << "\",\n";
         out << "      \"end_time\": \"" << timepoint_to_iso8601(t.end_time) << "\",\n";

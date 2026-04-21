@@ -29,13 +29,20 @@ struct RunResult {
     long long duration_ms{0};
 };
 
+struct SchedulerOptions {
+    int max_cpu_running{0};
+    int max_io_running{0};
+};
+
 class Scheduler {
 public:
     Scheduler(const WorkflowSpec& spec,
               const DagGraph& graph,
               ThreadPoolExecutor& executor,
               StateStore& state_store,
-              Observer& observer);
+              Observer& observer,
+              SchedulerOptions options = {},
+              std::unordered_map<std::string, TaskStatus> resume_states = {});
 
     RunResult run();
 
@@ -56,20 +63,29 @@ private:
     void handle_terminal(const ExecutionResult& result, TaskStatus final_status);
     void propagate_dependency_result(const std::string& task_id, bool success);
     void skip_subtree_if_needed(const std::string& task_id, const std::string& reason);
+    void apply_resume_state();
+    bool try_dispatch_one();
+    bool can_dispatch(const TaskSpec& spec) const;
+    void on_task_dispatched(const TaskSpec& spec);
+    void on_task_completed(const TaskSpec& spec);
 
     const WorkflowSpec& spec_;
     const DagGraph& graph_;
     ThreadPoolExecutor& executor_;
     StateStore& state_store_;
     Observer& observer_;
+    SchedulerOptions options_;
 
     std::unordered_map<std::string, TaskSpec> tasks_;
     std::unordered_map<std::string, int> remaining_deps_;
     std::unordered_map<std::string, int> failed_deps_;
     std::unordered_map<std::string, int> attempts_;
+    std::unordered_map<std::string, TaskStatus> resume_states_;
     std::priority_queue<ReadyTask> ready_;
 
     int running_{0};
+    int running_cpu_{0};
+    int running_io_{0};
 };
 
 }  // namespace dag

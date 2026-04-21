@@ -12,6 +12,8 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -25,6 +27,9 @@ struct CliOptions {
     std::string events_path{"events.jsonl"};
     std::optional<std::string> log_path{std::string{"run.log"}};
     std::string run_id;
+    bool resume{false};
+    int max_cpu_running{0};
+    int max_io_running{0};
 };
 
 std::string timestamp_id() {
@@ -37,7 +42,8 @@ void print_usage() {
     std::cout << "Usage:\n"
               << "  dag_scheduler validate --workflow <path>\n"
               << "  dag_scheduler run --workflow <path> [--workers N] [--report <path>] [--metrics <path>]\n"
-              << "                    [--events <path>] [--log <path>] [--run-id <id>]\n"
+              << "                    [--events <path>] [--log <path>] [--run-id <id>] [--resume]\n"
+              << "                    [--max-cpu N] [--max-io N]\n"
               << "  dag_scheduler replay --events <path>\n";
 }
 
@@ -79,6 +85,12 @@ CliOptions parse_args(int argc, char** argv) {
             }
         } else if (arg == "--run-id") {
             opts.run_id = need_value(arg);
+        } else if (arg == "--resume") {
+            opts.resume = true;
+        } else if (arg == "--max-cpu") {
+            opts.max_cpu_running = std::stoi(need_value(arg));
+        } else if (arg == "--max-io") {
+            opts.max_io_running = std::stoi(need_value(arg));
         } else {
             throw std::runtime_error("unknown option: " + arg);
         }
@@ -89,6 +101,9 @@ CliOptions parse_args(int argc, char** argv) {
     }
     if (opts.workers == 0) {
         opts.workers = 1;
+    }
+    if (opts.max_cpu_running < 0 || opts.max_io_running < 0) {
+        throw std::runtime_error("resource limits cannot be negative");
     }
     return opts;
 }
@@ -116,7 +131,19 @@ int run_scheduler(const CliOptions& opts) {
     dag::Observer observer(opts.run_id, opts.log_path);
     observer.info("starting workflow: " + spec.name);
 
-    dag::Scheduler scheduler(spec, graph, executor, state_store, observer);
+    std::unordered_map<std::string, dag::TaskStatus> resume_states;
+    if (opts.resume) {
+        dag::EventReplayer replayer;
+        resume_states = replayer.replay_file(opts.events_path);
+        observer.info("resume mode enabled");
+    }
+
+    dag::SchedulerOptions scheduler_options;
+    scheduler_options.max_cpu_running = opts.max_cpu_running;
+    scheduler_options.max_io_running = opts.max_io_running;
+
+    dag::Scheduler scheduler(
+        spec, graph, executor, state_store, observer, scheduler_options, std::move(resume_states));
     const dag::RunResult summary = scheduler.run();
 
     observer.write_report(opts.report_path, spec.name, state_store.all_snapshots());

@@ -11,10 +11,12 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -70,7 +72,19 @@ std::vector<std::string> read_lines(const fs::path& path) {
     return lines;
 }
 
-dag::RunResult run_workflow(const fs::path& workflow_path, std::size_t workers = 2) {
+std::string read_text(const fs::path& path) {
+    std::ifstream in(path);
+    if (!in) {
+        throw std::runtime_error("cannot read file: " + path.string());
+    }
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+dag::RunResult run_workflow(
+    const fs::path& workflow_path,
+    std::size_t workers = 2,
+    const dag::SchedulerOptions& options = {},
+    const std::unordered_map<std::string, dag::TaskStatus>& resume_states = {}) {
     dag::WorkflowParser parser;
     dag::WorkflowSpec spec = parser.parse_file(workflow_path.string());
 
@@ -81,7 +95,7 @@ dag::RunResult run_workflow(const fs::path& workflow_path, std::size_t workers =
     dag::StateStore store;
     dag::Observer observer("test-run", std::nullopt);
 
-    dag::Scheduler scheduler(spec, graph, executor, store, observer);
+    dag::Scheduler scheduler(spec, graph, executor, store, observer, options, resume_states);
     return scheduler.run();
 }
 
@@ -362,6 +376,99 @@ void test_parser_rejects_unknown_task_key() {
     ASSERT_TRUE(threw);
 }
 
+void test_resume_skips_already_succeeded_task() {
+    TempDir t;
+    const fs::path output = t.path / "resume.txt";
+    const fs::path workflow = t.path / "resume.workflow";
+
+    write_file(workflow,
+               "workflow resume\n"
+               "task A\n"
+               "  cmd: echo A >> " + output.string() + "\n"
+               "end\n"
+               "task B\n"
+               "  deps: A\n"
+               "  cmd: echo B >> " + output.string() + "\n"
+               "end\n"
+               "task C\n"
+               "  deps: A\n"
+               "  cmd: echo C >> " + output.string() + "\n"
+               "end\n");
+
+    const std::unordered_map<std::string, dag::TaskStatus> resume_states = {
+        {"A", dag::TaskStatus::Succeeded},
+    };
+
+    dag::RunResult result = run_workflow(workflow, 2, {}, resume_states);
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.succeeded, 3);
+
+    std::vector<std::string> lines = read_lines(output);
+    ASSERT_EQ(lines.size(), 2u);
+    ASSERT_TRUE(lines[0] != "A");
+    ASSERT_TRUE(lines[1] != "A");
+}
+
+void test_resource_cpu_limit_serializes_cpu_tasks() {
+    TempDir t;
+    const fs::path lock = t.path / "cpu_lock";
+    const fs::path output = t.path / "cpu_limit.txt";
+    const fs::path workflow = t.path / "cpu_limit.workflow";
+
+    write_file(workflow,
+               "workflow cpu_limit\n"
+               "task A\n"
+               "  resource: cpu\n"
+               "  cmd: if mkdir " + lock.string() + "; then sleep 0.2; echo A >> " + output.string() +
+                   "; rmdir " + lock.string() + "; else exit 88; fi\n"
+               "end\n"
+               "task B\n"
+               "  resource: cpu\n"
+               "  cmd: if mkdir " + lock.string() + "; then sleep 0.2; echo B >> " + output.string() +
+                   "; rmdir " + lock.string() + "; else exit 88; fi\n"
+               "end\n");
+
+    dag::SchedulerOptions options;
+    options.max_cpu_running = 1;
+
+    dag::RunResult result = run_workflow(workflow, 2, options);
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.succeeded, 2);
+
+    std::vector<std::string> lines = read_lines(output);
+    ASSERT_EQ(lines.size(), 2u);
+}
+
+void test_metrics_include_queue_wait_and_failure_reason_buckets() {
+    TempDir t;
+    const fs::path workflow = t.path / "metrics.workflow";
+    const fs::path metrics = t.path / "metrics.prom";
+
+    write_file(workflow,
+               "workflow metrics\n"
+               "task A\n"
+               "  cmd: true\n"
+               "end\n");
+
+    dag::WorkflowParser parser;
+    dag::WorkflowSpec spec = parser.parse_file(workflow.string());
+    dag::DagBuilder builder;
+    dag::DagGraph graph = builder.build(spec);
+    dag::ThreadPoolExecutor executor(1);
+    dag::StateStore store;
+    dag::Observer observer("metrics-test", std::nullopt);
+    dag::Scheduler scheduler(spec, graph, executor, store, observer);
+    dag::RunResult result = scheduler.run();
+    ASSERT_TRUE(result.success);
+
+    observer.write_metrics(metrics.string());
+    const std::string content = read_text(metrics);
+    ASSERT_TRUE(content.find("dag_queue_wait_total_ms") != std::string::npos);
+    ASSERT_TRUE(content.find("dag_queue_wait_max_ms") != std::string::npos);
+    ASSERT_TRUE(content.find("dag_queue_wait_avg_ms") != std::string::npos);
+    ASSERT_TRUE(content.find("dag_failures_total") != std::string::npos);
+}
+
 }  // namespace
 
 int main() {
@@ -378,6 +485,10 @@ int main() {
         {"event_replay_summary", test_event_replay_summary},
         {"event_replay_tolerates_malformed_lines", test_event_replay_tolerates_malformed_lines},
         {"parser_rejects_unknown_task_key", test_parser_rejects_unknown_task_key},
+        {"resume_skips_already_succeeded_task", test_resume_skips_already_succeeded_task},
+        {"resource_cpu_limit_serializes_cpu_tasks", test_resource_cpu_limit_serializes_cpu_tasks},
+        {"metrics_include_queue_wait_and_failure_reason_buckets",
+         test_metrics_include_queue_wait_and_failure_reason_buckets},
     };
 
     int passed = 0;

@@ -1,6 +1,8 @@
 #include "dag/scheduler.hpp"
 
+#include <algorithm>
 #include <stdexcept>
+#include <utility>
 
 namespace dag {
 namespace {
@@ -17,12 +19,16 @@ Scheduler::Scheduler(const WorkflowSpec& spec,
                      const DagGraph& graph,
                      ThreadPoolExecutor& executor,
                      StateStore& state_store,
-                     Observer& observer)
+                     Observer& observer,
+                     SchedulerOptions options,
+                     std::unordered_map<std::string, TaskStatus> resume_states)
     : spec_(spec),
       graph_(graph),
       executor_(executor),
       state_store_(state_store),
-      observer_(observer) {
+      observer_(observer),
+      options_(options),
+      resume_states_(std::move(resume_states)) {
     for (const auto& task : spec_.tasks) {
         tasks_[task.id] = task;
         remaining_deps_[task.id] = graph_.indegree.at(task.id);
@@ -33,9 +39,11 @@ Scheduler::Scheduler(const WorkflowSpec& spec,
 
 RunResult Scheduler::run() {
     state_store_.initialize(spec_);
+    apply_resume_state();
 
     for (const auto& [task_id, deg] : remaining_deps_) {
-        if (deg == 0) {
+        const TaskRuntimeSnapshot task = state_store_.snapshot(task_id);
+        if (deg == 0 && !is_terminal(task.status) && task.status != TaskStatus::Running) {
             enqueue_ready(task_id);
         }
     }
@@ -44,21 +52,9 @@ RunResult Scheduler::run() {
 
     while (state_store_.terminal_count() < static_cast<int>(spec_.tasks.size())) {
         while (running_ < static_cast<int>(executor_.worker_count()) && !ready_.empty()) {
-            ReadyTask ready = ready_.top();
-            ready_.pop();
-
-            TaskRuntimeSnapshot snap = state_store_.snapshot(ready.id);
-            if (is_terminal(snap.status) || snap.status == TaskStatus::Running) {
-                continue;
+            if (!try_dispatch_one()) {
+                break;
             }
-
-            const int attempt = attempts_[ready.id] + 1;
-            attempts_[ready.id] = attempt;
-
-            state_store_.mark_running(ready.id, attempt);
-            observer_.task_event(state_store_.snapshot(ready.id), "running");
-            executor_.submit(tasks_.at(ready.id), attempt);
-            ++running_;
         }
 
         if (running_ == 0 && ready_.empty()) {
@@ -70,10 +66,12 @@ RunResult Scheduler::run() {
             break;
         }
 
-        --running_;
         ExecutionResult result = *maybe_result;
 
         const TaskSpec& spec = tasks_.at(result.task_id);
+        --running_;
+        on_task_completed(spec);
+
         const bool success = (!result.timed_out && result.exit_code == 0);
         const bool can_retry = !success && attempts_.at(result.task_id) <= spec.max_retries;
 
@@ -112,14 +110,145 @@ RunResult Scheduler::run() {
     summary.duration_ms = duration_ms;
     summary.success = (summary.failed == 0 && summary.timed_out == 0);
 
+    long long queue_wait_total_ms = 0;
+    long long queue_wait_max_ms = 0;
+    int queue_wait_samples = 0;
+    int failed_nonzero = 0;
+    int failed_signal = 0;
+    const auto snapshots = state_store_.all_snapshots();
+    for (const auto& task : snapshots) {
+        if (task.start_time.time_since_epoch().count() != 0) {
+            const long long queue_wait_ms = task.queue_wait.count();
+            queue_wait_total_ms += queue_wait_ms;
+            queue_wait_max_ms = std::max(queue_wait_max_ms, queue_wait_ms);
+            ++queue_wait_samples;
+        }
+        if (task.status == TaskStatus::Failed) {
+            if (task.exit_code >= 128) {
+                ++failed_signal;
+            } else {
+                ++failed_nonzero;
+            }
+        }
+    }
+
     observer_.set_summary(summary.total_tasks,
                           summary.succeeded,
                           summary.failed,
                           summary.timed_out,
                           summary.skipped,
                           summary.retries,
-                          summary.duration_ms);
+                          summary.duration_ms,
+                          queue_wait_total_ms,
+                          queue_wait_max_ms,
+                          queue_wait_samples,
+                          failed_nonzero,
+                          failed_signal);
     return summary;
+}
+
+bool Scheduler::try_dispatch_one() {
+    std::vector<ReadyTask> blocked_by_resource;
+    while (!ready_.empty()) {
+        ReadyTask ready = ready_.top();
+        ready_.pop();
+
+        TaskRuntimeSnapshot snap = state_store_.snapshot(ready.id);
+        if (is_terminal(snap.status) || snap.status == TaskStatus::Running) {
+            continue;
+        }
+
+        const TaskSpec& spec = tasks_.at(ready.id);
+        if (!can_dispatch(spec)) {
+            blocked_by_resource.push_back(ready);
+            continue;
+        }
+
+        const int attempt = attempts_[ready.id] + 1;
+        attempts_[ready.id] = attempt;
+
+        state_store_.mark_running(ready.id, attempt);
+        observer_.task_event(state_store_.snapshot(ready.id), "running");
+        executor_.submit(spec, attempt);
+        ++running_;
+        on_task_dispatched(spec);
+
+        for (const auto& blocked : blocked_by_resource) {
+            ready_.push(blocked);
+        }
+        return true;
+    }
+
+    for (const auto& blocked : blocked_by_resource) {
+        ready_.push(blocked);
+    }
+    return false;
+}
+
+bool Scheduler::can_dispatch(const TaskSpec& spec) const {
+    if (spec.resource_class == TaskResourceClass::Cpu && options_.max_cpu_running > 0 &&
+        running_cpu_ >= options_.max_cpu_running) {
+        return false;
+    }
+    if (spec.resource_class == TaskResourceClass::Io && options_.max_io_running > 0 &&
+        running_io_ >= options_.max_io_running) {
+        return false;
+    }
+    return true;
+}
+
+void Scheduler::on_task_dispatched(const TaskSpec& spec) {
+    if (spec.resource_class == TaskResourceClass::Cpu) {
+        ++running_cpu_;
+    } else if (spec.resource_class == TaskResourceClass::Io) {
+        ++running_io_;
+    }
+}
+
+void Scheduler::on_task_completed(const TaskSpec& spec) {
+    if (spec.resource_class == TaskResourceClass::Cpu && running_cpu_ > 0) {
+        --running_cpu_;
+    } else if (spec.resource_class == TaskResourceClass::Io && running_io_ > 0) {
+        --running_io_;
+    }
+}
+
+void Scheduler::apply_resume_state() {
+    for (const auto& [task_id, status] : resume_states_) {
+        if (!tasks_.contains(task_id)) {
+            continue;
+        }
+
+        const TaskRuntimeSnapshot current = state_store_.snapshot(task_id);
+        if (is_terminal(current.status)) {
+            continue;
+        }
+
+        if (status == TaskStatus::Succeeded) {
+            ExecutionResult resumed;
+            resumed.task_id = task_id;
+            resumed.attempt = 1;
+            resumed.exit_code = 0;
+            resumed.message = "resumed terminal state";
+            state_store_.mark_terminal(task_id, TaskStatus::Succeeded, resumed);
+            observer_.task_event(state_store_.snapshot(task_id), "resumed_terminal");
+            propagate_dependency_result(task_id, true);
+        } else if (status == TaskStatus::Failed || status == TaskStatus::TimedOut) {
+            ExecutionResult resumed;
+            resumed.task_id = task_id;
+            resumed.attempt = 1;
+            resumed.exit_code = (status == TaskStatus::TimedOut) ? -1 : 1;
+            resumed.timed_out = (status == TaskStatus::TimedOut);
+            resumed.message = "resumed terminal state";
+            state_store_.mark_terminal(task_id, status, resumed);
+            observer_.task_event(state_store_.snapshot(task_id), "resumed_terminal");
+            propagate_dependency_result(task_id, false);
+        } else if (status == TaskStatus::Skipped || status == TaskStatus::Canceled) {
+            state_store_.mark_skipped(task_id, "resumed skipped state");
+            observer_.task_event(state_store_.snapshot(task_id), "resumed_skipped");
+            propagate_dependency_result(task_id, false);
+        }
+    }
 }
 
 void Scheduler::enqueue_ready(const std::string& task_id) {

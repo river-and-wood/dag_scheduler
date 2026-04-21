@@ -26,4 +26,16 @@ std::string to_string(TaskStatus status) {
     return "Unknown";
 }
 
+std::string to_string(TaskResourceClass resource_class) {
+    switch (resource_class) {
+        case TaskResourceClass::Default:
+            return "default";
+        case TaskResourceClass::Cpu:
+            return "cpu";
+        case TaskResourceClass::Io:
+            return "io";
+    }
+    return "default";
+}
+
 }  // namespace dag
