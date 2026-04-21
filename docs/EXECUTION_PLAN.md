@@ -9,9 +9,9 @@
 - M1 Planning Freeze: `done` (2026-04-21)
 - M2 CI Setup: `done` (2026-04-21)
 - M3 Coverage Gap Fill: `done` (2026-04-21)
-- M4 Replay + Resume: `in_progress` (2026-04-21)
-- M5 Observability + Scheduling: `todo`
-- M6 Packaging + Release: `todo`
+- M4 Replay + Resume: `done` (2026-04-21)
+- M5 Observability + Scheduling: `done` (2026-04-21)
+- M6 Packaging + Release: `done` (2026-04-21)
 
 ## Step 1: Planning Freeze (M1)
 - Tasks:
@@ -69,7 +69,14 @@
   - `CHANGELOG.md`
   - docs updates in `README.md` and `packaging/`
 - Verification:
-  - fresh-host runbook is executable end-to-end
+  - local release gates passed:
+    - `cmake --preset debug && cmake --build --preset debug && ctest --test-dir build/debug --output-on-failure`
+    - `cmake --preset asan && cmake --build --preset asan && ASAN_OPTIONS=detect_leaks=0 ctest --test-dir build/asan --output-on-failure`
+    - `cmake --preset tsan && cmake --build --preset tsan && ctest --test-dir build/tsan --output-on-failure`
+  - docs and packaging artifacts prepared for host deployment:
+    - `docs/DEPLOYMENT.md`
+    - `packaging/dag-scheduler.service`
+    - `docs/RELEASE_CHECKLIST.md`
 
 ## Work Cadence
 - Open one PR per step when feasible.

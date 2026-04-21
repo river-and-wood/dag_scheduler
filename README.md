@@ -23,6 +23,10 @@
 
 - 路线图：`docs/ROADMAP.md`
 - 执行计划：`docs/EXECUTION_PLAN.md`
+- 部署手册：`docs/DEPLOYMENT.md`
+- 发布清单：`docs/RELEASE_CHECKLIST.md`
+- 回滚方案：`docs/ROLLBACK.md`
+- 变更记录：`CHANGELOG.md`
 
 ## 工作流格式
 
@@ -36,6 +40,7 @@ task task_id
   retries: 1
   timeout_ms: 3000
   priority: 10
+  resource: default
 end
 ```
 
@@ -48,6 +53,7 @@ end
 - `retries`: 最大重试次数
 - `timeout_ms`: 超时毫秒，`0` 表示不限时
 - `priority`: 就绪队列优先级（数值越大优先级越高）
+- `resource`: 任务资源类型（`default`/`cpu`/`io`）
 - `end`: 任务块结束
 
 ## 构建
@@ -71,10 +77,13 @@ cmake --build --preset debug
 ./build/debug/dag_scheduler run \
   --workflow examples/sample.workflow \
   --workers 4 \
+  --max-cpu 2 \
+  --max-io 2 \
   --report report.json \
   --metrics metrics.prom \
   --events events.jsonl \
-  --log run.log
+  --log run.log \
+  --resume
 ```
 
 输出：
@@ -82,6 +91,13 @@ cmake --build --preset debug
 - `metrics.prom`: Prometheus 文本指标
 - `events.jsonl`: 任务状态变更事件日志
 - `run.log`: 结构化运行日志
+
+`--resume` 启用后，会读取 `--events` 指向的历史事件日志并恢复已完成任务状态，避免重复执行已经成功/终止的任务。
+`--max-cpu` / `--max-io` 可限制 `resource: cpu/io` 任务的并发数。
+
+新增指标示例：
+- `dag_queue_wait_total_ms` / `dag_queue_wait_max_ms` / `dag_queue_wait_avg_ms`
+- `dag_failures_total{reason="non_zero_exit|signal|timed_out"}`
 
 ## 事件重放（恢复摘要）
 

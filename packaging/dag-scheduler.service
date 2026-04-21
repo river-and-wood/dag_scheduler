@@ -10,15 +10,19 @@ WorkingDirectory=/opt/my-dag-scheduler
 ExecStart=/opt/my-dag-scheduler/bin/dag_scheduler run \
   --workflow /opt/my-dag-scheduler/workflows/sample.workflow \
   --workers 4 \
+  --max-cpu 2 \
+  --max-io 2 \
   --report /var/lib/my-dag-scheduler/report.json \
   --metrics /var/lib/my-dag-scheduler/metrics.prom \
   --events /var/log/my-dag-scheduler/events.jsonl \
-  --log /var/log/my-dag-scheduler/run.log
+  --log /var/log/my-dag-scheduler/run.log \
+  --resume
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
+UMask=0027
 ReadWritePaths=/var/lib/my-dag-scheduler /var/log/my-dag-scheduler
 
 [Install]
