@@ -1,5 +1,6 @@
 #include "dag/executor.hpp"
 
+#include <cerrno>
 #include <cctype>
 #include <csignal>
 #include <stdexcept>
@@ -68,6 +69,21 @@ bool can_use_execvp_fast_path(const std::string& command) {
 
     execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char*>(nullptr));
     _exit(127);
+}
+
+void signal_task_process(pid_t pid, int sig) {
+    if (pid <= 0) {
+        return;
+    }
+
+    const pid_t process_group = getpgid(pid);
+    if (process_group == pid) {
+        if (kill(-pid, sig) == 0 || errno != ESRCH) {
+            return;
+        }
+    }
+
+    (void)kill(pid, sig);
 }
 
 }  // namespace
@@ -168,8 +184,13 @@ ExecutionResult ThreadPoolExecutor::run_command(const TaskSpec& spec, int attemp
     }
 
     if (pid == 0) {
+        // Ensure each task runs in its own process group so timeout signals can
+        // terminate the whole command subtree (shell + descendants).
+        (void)setpgid(0, 0);
         exec_command_fast_or_shell(spec.command);
     }
+
+    (void)setpgid(pid, pid);
 
     int status = 0;
     bool done = false;
@@ -182,8 +203,13 @@ ExecutionResult ThreadPoolExecutor::run_command(const TaskSpec& spec, int attemp
             break;
         }
         if (w < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
             result.exit_code = 1;
             result.message = "waitpid failed";
+            signal_task_process(pid, SIGKILL);
+            (void)waitpid(pid, &status, 0);
             done = true;
             break;
         }
@@ -196,7 +222,7 @@ ExecutionResult ThreadPoolExecutor::run_command(const TaskSpec& spec, int attemp
             std::chrono::steady_clock::now() - start);
         if (elapsed >= timeout) {
             result.timed_out = true;
-            kill(pid, SIGTERM);
+            signal_task_process(pid, SIGTERM);
 
             for (int i = 0; i < 20; ++i) {
                 w = waitpid(pid, &status, WNOHANG);
@@ -204,12 +230,15 @@ ExecutionResult ThreadPoolExecutor::run_command(const TaskSpec& spec, int attemp
                     done = true;
                     break;
                 }
+                if (w < 0 && errno == EINTR) {
+                    continue;
+                }
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
 
             if (!done) {
-                kill(pid, SIGKILL);
-                waitpid(pid, &status, 0);
+                signal_task_process(pid, SIGKILL);
+                (void)waitpid(pid, &status, 0);
                 done = true;
             }
             break;

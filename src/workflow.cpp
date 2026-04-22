@@ -37,9 +37,48 @@ std::vector<std::string> split_csv(const std::string& s) {
     return out;
 }
 
+std::string strip_inline_comment(const std::string& line) {
+    bool in_single_quote = false;
+    bool in_double_quote = false;
+    bool escaped = false;
+
+    for (std::size_t i = 0; i < line.size(); ++i) {
+        const char ch = line[i];
+
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+
+        if (ch == '\\') {
+            escaped = true;
+            continue;
+        }
+
+        if (ch == '\'' && !in_double_quote) {
+            in_single_quote = !in_single_quote;
+            continue;
+        }
+        if (ch == '"' && !in_single_quote) {
+            in_double_quote = !in_double_quote;
+            continue;
+        }
+
+        if (ch == '#' && !in_single_quote && !in_double_quote) {
+            return line.substr(0, i);
+        }
+    }
+    return line;
+}
+
 int parse_int(const std::string& key, const std::string& val) {
     try {
-        return std::stoi(val);
+        std::size_t consumed = 0;
+        const int parsed = std::stoi(val, &consumed);
+        if (consumed != val.size()) {
+            throw std::runtime_error("invalid integer for key '" + key + "': " + val);
+        }
+        return parsed;
     } catch (const std::exception&) {
         throw std::runtime_error("invalid integer for key '" + key + "': " + val);
     }
@@ -108,10 +147,7 @@ WorkflowSpec WorkflowParser::parse_file(const std::string& path) const {
     int line_no = 0;
     while (std::getline(in, line)) {
         ++line_no;
-        auto pos = line.find('#');
-        if (pos != std::string::npos) {
-            line = line.substr(0, pos);
-        }
+        line = strip_inline_comment(line);
         line = trim(line);
         if (line.empty()) {
             continue;

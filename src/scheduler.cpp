@@ -41,9 +41,19 @@ RunResult Scheduler::run() {
     state_store_.initialize(spec_);
     apply_resume_state();
 
+    if (spec_.fail_fast &&
+        (state_store_.failed_count() > 0 || state_store_.timed_out_count() > 0)) {
+        for (const auto& [task_id, _] : tasks_) {
+            const TaskRuntimeSnapshot task = state_store_.snapshot(task_id);
+            if (!is_terminal(task.status) && task.status != TaskStatus::Running) {
+                skip_subtree_if_needed(task_id, "fail_fast triggered");
+            }
+        }
+    }
+
     for (const auto& [task_id, deg] : remaining_deps_) {
         const TaskRuntimeSnapshot task = state_store_.snapshot(task_id);
-        if (deg == 0 && !is_terminal(task.status) && task.status != TaskStatus::Running) {
+        if (deg == 0 && task.status == TaskStatus::Pending) {
             enqueue_ready(task_id);
         }
     }
@@ -124,7 +134,7 @@ RunResult Scheduler::run() {
             ++queue_wait_samples;
         }
         if (task.status == TaskStatus::Failed) {
-            if (task.exit_code >= 128) {
+            if (task.message == "terminated by signal") {
                 ++failed_signal;
             } else {
                 ++failed_nonzero;

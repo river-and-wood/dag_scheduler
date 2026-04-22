@@ -9,6 +9,24 @@ The format is based on Keep a Changelog, and this project follows Semantic Versi
 ### Added
 - None yet.
 
+### Changed
+- Default `run_id` generation is now collision-resistant for concurrent runs by using
+  `milliseconds + pid + in-process sequence`.
+- CLI numeric parsing is now strict for `--workers`, `--max-cpu`, and `--max-io`.
+- Workflow numeric parsing is now strict and rejects trailing non-numeric characters.
+- `--workers` now enforces a hard upper bound (`1024`) to avoid pathological resource requests.
+- Resume startup scheduling now only initializes `Pending` zero-indegree tasks to avoid duplicate ready enqueue.
+- Task execution now uses per-task process groups so timeout termination can target the full command subtree.
+
+### Fixed
+- Fixed `run_id` collisions when multiple `run` commands started within the same second.
+- Fixed workflow command parsing where `#` inside quoted command strings could be truncated as comments.
+- Fixed ambiguous runtime error path for `--workers -1` by adding explicit validation.
+- Fixed `--workers` oversized input path that previously surfaced as `std::bad_alloc`.
+- Fixed failure-reason metrics misclassification where plain non-zero exits such as `exit 130` were counted as `signal`.
+- Fixed timeout cleanup so background child processes spawned by a task are terminated with the parent.
+- Fixed `fail_fast` semantics during `--resume` so pending tasks are skipped when resumed state already contains failures.
+
 ## [0.2.0] - 2026-04-21
 
 ### Added

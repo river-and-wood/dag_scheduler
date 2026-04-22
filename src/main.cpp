@@ -6,17 +6,23 @@
 #include "dag/state_store.hpp"
 #include "dag/workflow.hpp"
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <unistd.h>
 
 namespace {
+
+constexpr std::size_t kMaxWorkers = 1024;
 
 struct CliOptions {
     std::string command;
@@ -35,8 +41,51 @@ struct CliOptions {
 
 std::string timestamp_id() {
     const auto now = std::chrono::system_clock::now();
-    const auto sec = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
-    return "run-" + std::to_string(sec);
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    static std::atomic<std::uint64_t> seq{0};
+    const auto current_seq = seq.fetch_add(1, std::memory_order_relaxed);
+    return "run-" + std::to_string(ms) + "-" + std::to_string(::getpid()) + "-"
+           + std::to_string(current_seq);
+}
+
+int parse_cli_int(const std::string& key, const std::string& raw) {
+    try {
+        std::size_t consumed = 0;
+        const int parsed = std::stoi(raw, &consumed);
+        if (consumed != raw.size()) {
+            throw std::runtime_error("invalid integer");
+        }
+        return parsed;
+    } catch (const std::exception&) {
+        throw std::runtime_error("invalid integer for " + key + ": " + raw);
+    }
+}
+
+std::size_t parse_workers(const std::string& raw) {
+    if (!raw.empty() && raw[0] == '-') {
+        throw std::runtime_error("--workers cannot be negative: " + raw);
+    }
+
+    try {
+        std::size_t consumed = 0;
+        const unsigned long long parsed = std::stoull(raw, &consumed);
+        if (consumed != raw.size()) {
+            throw std::runtime_error("invalid integer");
+        }
+        if (parsed > std::numeric_limits<std::size_t>::max()) {
+            throw std::runtime_error("value too large");
+        }
+        const std::size_t workers = static_cast<std::size_t>(parsed);
+        if (workers > kMaxWorkers) {
+            throw std::runtime_error("--workers cannot exceed " + std::to_string(kMaxWorkers) +
+                                     ": " + raw);
+        }
+        return workers;
+    } catch (const std::runtime_error&) {
+        throw;
+    } catch (const std::exception&) {
+        throw std::runtime_error("invalid integer for --workers: " + raw);
+    }
 }
 
 void print_usage() {
@@ -70,7 +119,7 @@ CliOptions parse_args(int argc, char** argv) {
         if (arg == "--workflow") {
             opts.workflow_path = need_value(arg);
         } else if (arg == "--workers") {
-            opts.workers = static_cast<std::size_t>(std::stoul(need_value(arg)));
+            opts.workers = parse_workers(need_value(arg));
         } else if (arg == "--report") {
             opts.report_path = need_value(arg);
         } else if (arg == "--metrics") {
@@ -90,9 +139,9 @@ CliOptions parse_args(int argc, char** argv) {
         } else if (arg == "--resume") {
             opts.resume = true;
         } else if (arg == "--max-cpu") {
-            opts.max_cpu_running = std::stoi(need_value(arg));
+            opts.max_cpu_running = parse_cli_int("--max-cpu", need_value(arg));
         } else if (arg == "--max-io") {
-            opts.max_io_running = std::stoi(need_value(arg));
+            opts.max_io_running = parse_cli_int("--max-io", need_value(arg));
         } else {
             throw std::runtime_error("unknown option: " + arg);
         }

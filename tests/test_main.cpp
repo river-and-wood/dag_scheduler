@@ -6,7 +6,10 @@
 #include "dag/state_store.hpp"
 #include "dag/workflow.hpp"
 
+#include <cerrno>
 #include <chrono>
+#include <csignal>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -78,6 +81,19 @@ std::string read_text(const fs::path& path) {
         throw std::runtime_error("cannot read file: " + path.string());
     }
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+std::size_t count_substring(const std::string& text, const std::string& needle) {
+    if (needle.empty()) {
+        return 0;
+    }
+    std::size_t count = 0;
+    std::size_t pos = 0;
+    while ((pos = text.find(needle, pos)) != std::string::npos) {
+        ++count;
+        pos += needle.size();
+    }
+    return count;
 }
 
 dag::RunResult run_workflow(
@@ -315,6 +331,32 @@ void test_timeout() {
     ASSERT_EQ(result.timed_out, 1);
 }
 
+void test_timeout_kills_spawned_child_processes() {
+    TempDir t;
+    const fs::path child_pid = t.path / "child.pid";
+    const fs::path workflow = t.path / "timeout_children.workflow";
+
+    write_file(workflow,
+               "workflow timeout_children\n"
+               "task A\n"
+               "  timeout_ms: 100\n"
+               "  cmd: sh -c 'sleep 5 & echo $! > " + child_pid.string() + "; wait'\n"
+               "end\n");
+
+    dag::RunResult result = run_workflow(workflow, 1);
+    ASSERT_TRUE(!result.success);
+    ASSERT_EQ(result.timed_out, 1);
+
+    const pid_t spawned_child = static_cast<pid_t>(std::stol(read_text(child_pid)));
+    errno = 0;
+    const int rc = ::kill(spawned_child, 0);
+    const bool alive = (rc == 0 || errno == EPERM);
+    if (alive) {
+        (void)::kill(spawned_child, SIGKILL);
+    }
+    ASSERT_TRUE(!alive);
+}
+
 void test_event_replay_summary() {
     TempDir t;
     const fs::path events = t.path / "events.jsonl";
@@ -521,6 +563,66 @@ void test_parser_rejects_unknown_task_key() {
     ASSERT_TRUE(threw);
 }
 
+void test_parser_preserves_hash_inside_quoted_command() {
+    TempDir t;
+    const fs::path output = t.path / "hash.txt";
+    const fs::path workflow = t.path / "hash.workflow";
+    write_file(workflow,
+               "workflow hash_cmd\n"
+               "task A\n"
+               "  cmd: sh -c \"printf '#ok' > " + output.string() + "\"\n"
+               "end\n");
+
+    const dag::RunResult result = run_workflow(workflow, 1);
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(result.succeeded, 1);
+    ASSERT_EQ(read_text(output), std::string("#ok"));
+}
+
+void test_parser_rejects_integer_with_trailing_characters() {
+    TempDir t;
+    const fs::path workflow = t.path / "bad_int.workflow";
+    write_file(workflow,
+               "workflow bad_int\n"
+               "task A\n"
+               "  retries: 1abc\n"
+               "  cmd: true\n"
+               "end\n");
+
+    dag::WorkflowParser parser;
+    bool threw = false;
+    try {
+        (void)parser.parse_file(workflow.string());
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    ASSERT_TRUE(threw);
+}
+
+void test_cli_rejects_invalid_numeric_flags() {
+    TempDir t;
+    const fs::path workflow = t.path / "cli.workflow";
+    write_file(workflow,
+               "workflow cli\n"
+               "task A\n"
+               "  cmd: true\n"
+               "end\n");
+
+    const std::string run_workers_negative =
+        "./dag_scheduler run --workflow " + workflow.string() +
+        " --workers -1 > /dev/null 2>&1";
+    const std::string run_max_cpu_dirty =
+        "./dag_scheduler run --workflow " + workflow.string() +
+        " --max-cpu 2abc > /dev/null 2>&1";
+    const std::string run_workers_too_large =
+        "./dag_scheduler run --workflow " + workflow.string() +
+        " --workers 1000000000 > /dev/null 2>&1";
+
+    ASSERT_TRUE(std::system(run_workers_negative.c_str()) != 0);
+    ASSERT_TRUE(std::system(run_max_cpu_dirty.c_str()) != 0);
+    ASSERT_TRUE(std::system(run_workers_too_large.c_str()) != 0);
+}
+
 void test_resume_skips_already_succeeded_task() {
     TempDir t;
     const fs::path output = t.path / "resume.txt";
@@ -552,6 +654,32 @@ void test_resume_skips_already_succeeded_task() {
     ASSERT_EQ(lines.size(), 2u);
     ASSERT_TRUE(lines[0] != "A");
     ASSERT_TRUE(lines[1] != "A");
+}
+
+void test_resume_respects_fail_fast_after_resumed_failure() {
+    TempDir t;
+    const fs::path output = t.path / "should_not_run.txt";
+    const fs::path workflow = t.path / "resume_fail_fast.workflow";
+    write_file(workflow,
+               "workflow resume_fail_fast\n"
+               "fail_fast true\n"
+               "task A\n"
+               "  cmd: exit 1\n"
+               "end\n"
+               "task B\n"
+               "  cmd: echo B >> " + output.string() + "\n"
+               "end\n");
+
+    const std::unordered_map<std::string, dag::TaskStatus> resume_states = {
+        {"A", dag::TaskStatus::Failed},
+    };
+
+    const dag::RunResult result = run_workflow(workflow, 1, {}, resume_states);
+    ASSERT_TRUE(!result.success);
+    ASSERT_EQ(result.failed, 1);
+    ASSERT_EQ(result.skipped, 1);
+    ASSERT_EQ(result.succeeded, 0);
+    ASSERT_TRUE(!fs::exists(output));
 }
 
 void test_resource_cpu_limit_serializes_cpu_tasks() {
@@ -614,6 +742,84 @@ void test_metrics_include_queue_wait_and_failure_reason_buckets() {
     ASSERT_TRUE(content.find("dag_failures_total") != std::string::npos);
 }
 
+void test_resume_does_not_emit_duplicate_ready_events() {
+    TempDir t;
+    const fs::path events = t.path / "resume_dedup_events.jsonl";
+    const fs::path workflow = t.path / "resume_dedup.workflow";
+    write_file(workflow,
+               "workflow resume_dedup\n"
+               "task A\n"
+               "  cmd: true\n"
+               "end\n"
+               "task B\n"
+               "  deps: A\n"
+               "  cmd: true\n"
+               "end\n"
+               "task C\n"
+               "  deps: A\n"
+               "  cmd: true\n"
+               "end\n");
+
+    dag::WorkflowParser parser;
+    const dag::WorkflowSpec spec = parser.parse_file(workflow.string());
+    const std::string fingerprint = dag::compute_workflow_fingerprint(spec);
+    write_file(events,
+               "{\"ts\":\"2026-01-01T00:00:00Z\",\"run_id\":\"resume-dedup\",\"workflow\":\"resume_dedup\","
+               "\"workflow_fingerprint\":\"" +
+                   fingerprint +
+                   "\",\"task_id\":\"A\",\"event\":\"terminal\",\"details\":\"Succeeded, exit_code=0\"}\n");
+
+    dag::DagBuilder builder;
+    const dag::DagGraph graph = builder.build(spec);
+    dag::ThreadPoolExecutor executor(1);
+    dag::StateStore store(events.string());
+    store.set_event_context("resume-dedup", spec.name, fingerprint);
+    dag::Observer observer("resume-dedup", std::nullopt);
+    const std::unordered_map<std::string, dag::TaskStatus> resume_states = {
+        {"A", dag::TaskStatus::Succeeded},
+    };
+
+    dag::Scheduler scheduler(spec, graph, executor, store, observer, {}, resume_states);
+    const dag::RunResult result = scheduler.run();
+    ASSERT_TRUE(result.success);
+
+    const std::string content = read_text(events);
+    ASSERT_EQ(count_substring(content, "\"task_id\":\"B\",\"event\":\"ready\""), 1u);
+    ASSERT_EQ(count_substring(content, "\"task_id\":\"C\",\"event\":\"ready\""), 1u);
+}
+
+void test_metrics_classify_exit_130_as_non_zero_exit() {
+    TempDir t;
+    const fs::path workflow = t.path / "exit130.workflow";
+    const fs::path metrics = t.path / "exit130.prom";
+    write_file(workflow,
+               "workflow exit130\n"
+               "task A\n"
+               "  cmd: sh -c 'exit 130'\n"
+               "end\n");
+
+    dag::WorkflowParser parser;
+    const dag::WorkflowSpec spec = parser.parse_file(workflow.string());
+    dag::DagBuilder builder;
+    const dag::DagGraph graph = builder.build(spec);
+    dag::ThreadPoolExecutor executor(1);
+    dag::StateStore store;
+    dag::Observer observer("metrics-classify", std::nullopt);
+    dag::Scheduler scheduler(spec, graph, executor, store, observer);
+    const dag::RunResult result = scheduler.run();
+    ASSERT_TRUE(!result.success);
+    ASSERT_EQ(result.failed, 1);
+
+    observer.write_metrics(metrics.string());
+    const std::string content = read_text(metrics);
+    ASSERT_TRUE(
+        content.find("dag_failures_total{run_id=\"metrics-classify\",reason=\"non_zero_exit\"} 1") !=
+        std::string::npos);
+    ASSERT_TRUE(
+        content.find("dag_failures_total{run_id=\"metrics-classify\",reason=\"signal\"} 0") !=
+        std::string::npos);
+}
+
 }  // namespace
 
 int main() {
@@ -627,6 +833,7 @@ int main() {
         {"failure_propagation_to_skip", test_failure_propagation_to_skip},
         {"fail_fast_skips_remaining_ready_tasks", test_fail_fast_skips_remaining_ready_tasks},
         {"timeout", test_timeout},
+        {"timeout_kills_spawned_child_processes", test_timeout_kills_spawned_child_processes},
         {"event_replay_summary", test_event_replay_summary},
         {"event_replay_tolerates_malformed_lines", test_event_replay_tolerates_malformed_lines},
         {"event_replay_parses_escaped_json_strings", test_event_replay_parses_escaped_json_strings},
@@ -636,10 +843,21 @@ int main() {
         {"resume_requires_matching_workflow_fingerprint",
          test_resume_requires_matching_workflow_fingerprint},
         {"parser_rejects_unknown_task_key", test_parser_rejects_unknown_task_key},
+        {"parser_preserves_hash_inside_quoted_command",
+         test_parser_preserves_hash_inside_quoted_command},
+        {"parser_rejects_integer_with_trailing_characters",
+         test_parser_rejects_integer_with_trailing_characters},
+        {"cli_rejects_invalid_numeric_flags", test_cli_rejects_invalid_numeric_flags},
         {"resume_skips_already_succeeded_task", test_resume_skips_already_succeeded_task},
+        {"resume_respects_fail_fast_after_resumed_failure",
+         test_resume_respects_fail_fast_after_resumed_failure},
         {"resource_cpu_limit_serializes_cpu_tasks", test_resource_cpu_limit_serializes_cpu_tasks},
         {"metrics_include_queue_wait_and_failure_reason_buckets",
          test_metrics_include_queue_wait_and_failure_reason_buckets},
+        {"resume_does_not_emit_duplicate_ready_events",
+         test_resume_does_not_emit_duplicate_ready_events},
+        {"metrics_classify_exit_130_as_non_zero_exit",
+         test_metrics_classify_exit_130_as_non_zero_exit},
     };
 
     int passed = 0;
